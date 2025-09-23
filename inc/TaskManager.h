@@ -38,7 +38,7 @@ public:
 
 
 
-    TaskManager(std::vector<list<int>>& tasks, int num_of_agents):
+    TaskManager(std::vector<tuple<list<int>, int>>& tasks, int num_of_agents):
         tasks(tasks), num_of_agents(num_of_agents)
     {
         finished_tasks.resize(num_of_agents);
@@ -55,6 +55,8 @@ public:
 
 
     int num_of_task_finish = 0;
+    int deadline_met = 0;
+    int deadline_failed = 0;
 
     ~ TaskManager()
     {
@@ -77,7 +79,7 @@ private:
     list<Task*> all_tasks;
 
 
-    std::vector<list<int>>& tasks;
+    std::vector<tuple<list<int>, int>>& tasks;
     int task_id = 0;
 
 };

@@ -98,10 +98,12 @@ inline std::vector<int> read_int_vec(string fname, int team_size)
 }
 
 
-//inline std::vector<int> read_int_vec(string fname)
-inline std::vector<list<int>> read_int_vec(string fname)
+// i have to modify this as deadlines will be passed in the task file
+// proposal: return should be vector<tuple<List<int>, int>>
+// where the first element is the list of locations, and the second element is the deadline
+inline std::vector<tuple<list<int>, int>> read_int_vec(string fname)
 {
-    std::vector<list<int>> res;
+    std::vector<tuple<list<int>, int>> res;
 	string line;
 	std::ifstream myfile(fname.c_str());
 	if (!myfile.is_open()) return {};
@@ -126,14 +128,23 @@ inline std::vector<list<int>> read_int_vec(string fname)
         {
             getline(myfile, line);
         }
-        boost::tokenizer<boost::char_separator<char>> tok(line, sep);
+
+        size_t pos = line.find(';');
+        if (pos == std::string::npos)
+        {
+            continue; // malformed line
+        }
+        string locs_str = line.substr(0, pos); //locations are separated by ','
+        string deadline_str = line.substr(pos + 1); //deadline is a single integer
+        boost::tokenizer<boost::char_separator<char>> tok(locs_str, sep);
         boost::tokenizer<boost::char_separator<char>>::iterator beg = tok.begin();
         list<int> locs;
         for(;beg!=tok.end();++beg)
         {
             locs.push_back(atoi((*beg).c_str()));
         }
-        res.push_back(locs);
+        int deadline = atoi(deadline_str.c_str());
+        res.push_back(std::make_tuple(locs, deadline));
     }
     myfile.close();
 

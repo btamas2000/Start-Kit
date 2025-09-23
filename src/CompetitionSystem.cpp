@@ -255,6 +255,9 @@ void BaseSystem::saveResults(const string &fileName, int screen) const
     }
     js["makespan"] = makespan;
 
+    js["deadlineMet"] = task_manager.deadline_met;
+    js["deadlineFailed"] = task_manager.deadline_failed;
+
     js["numPlannerErrors"] = simulator.get_number_errors();
     js["numScheduleErrors"] = task_manager.get_number_errors();
 

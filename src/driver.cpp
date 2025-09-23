@@ -142,8 +142,10 @@ int main(int argc, char **argv)
     int team_size = read_param_json<int>(data, "teamSize");
 
     std::vector<int> agents = read_int_vec(base_folder + read_param_json<std::string>(data, "agentFile"), team_size);
-    std::vector<list<int>> tasks = read_int_vec(base_folder + read_param_json<std::string>(data, "taskFile"));
+    std::vector<tuple<list<int>, int>> tasks = read_int_vec(base_folder + read_param_json<std::string>(data, "taskFile")); //tasks from input are first processed here
     if (agents.size() > tasks.size())
+        logger->log_warning("Agents size: " + std::to_string(agents.size()));
+        logger->log_warning("Tasks size: " + std::to_string(tasks.size()));
         logger->log_warning("Not enough tasks for robots (number of tasks < team size)");
 
     system_ptr = std::make_unique<BaseSystem>(grid, planner, agents, tasks, model);

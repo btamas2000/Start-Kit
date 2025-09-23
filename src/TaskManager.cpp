@@ -139,6 +139,15 @@ list<int> TaskManager::check_finished_tasks(vector<State>& states, int timestep)
                 ongoing_tasks.erase(task->task_id);
                 task->t_completed = timestep;
 
+                if (task->deadline_kept())
+                {
+                    deadline_met+=1;
+                }
+                else
+                {
+                    deadline_failed+=1;
+                }
+
                 finished_tasks_this_timestep.push_back(task->task_id);
                 finished_tasks[task->agent_assigned].emplace_back(task);
                 num_of_task_finish++;
@@ -183,8 +192,10 @@ void TaskManager::reveal_tasks(int timestep)
     while (ongoing_tasks.size() < num_tasks_reveal)
     {
         int i = task_id%tasks.size();
-        list<int> locs = tasks[i];
-        Task* task = new Task(task_id,locs,timestep);
+        tuple<list<int>, int> locs_deadline = tasks[i];
+        list<int> locs = std::get<0>(locs_deadline);
+        int deadline = std::get<1>(locs_deadline);
+        Task* task = new Task(task_id,locs,timestep, deadline);
         ongoing_tasks[task->task_id] = task;
         all_tasks.push_back(task);
         new_tasks.push_back(task->task_id);         // record the new tasks
