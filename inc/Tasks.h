@@ -9,7 +9,7 @@ struct Task
     int t_completed = -1;
     int t_revealed = -1;
     int agent_assigned = -1;
-    int deadline = -1;
+    int t_deadline = -1;
 
     vector<int> locations;
     int idx_next_loc = 0;
@@ -38,18 +38,18 @@ struct Task
     // kept if t_revealed + deadline <= t_completed
     bool deadline_kept()
     {
-        if (deadline < 0) // no deadline
+        if (t_deadline < 0) // no deadline
             return true;
-        return t_revealed + deadline >= t_completed;
+        return t_revealed + t_deadline >= t_completed;
     }
 
     //Task(int task_id, int location): task_id(task_id), locations({location}) {};
     Task(int task_id, list<int> location, int t_revealed, int deadline): task_id(task_id), t_revealed(t_revealed)
     {
         if (deadline > 0)
-            this->deadline = deadline;
+            this->t_deadline = deadline;
         else
-            this->deadline = -1; // no deadline
+            this->t_deadline = -1; // no deadline
         for (auto loc: location)
             locations.push_back(loc);
     };
@@ -60,6 +60,7 @@ struct Task
     {
         task_id = other->task_id;
         t_completed = other->t_completed;
+        t_deadline = other->t_deadline;
         locations = other->locations;
         t_revealed = other->t_revealed;
         idx_next_loc = other->idx_next_loc;
@@ -70,6 +71,7 @@ struct Task
     {
         task_id = other.task_id;
         t_completed = other.t_completed;
+        t_deadline = other.t_deadline;
         locations = other.locations;
         t_revealed = other.t_revealed;
         idx_next_loc = other.idx_next_loc;

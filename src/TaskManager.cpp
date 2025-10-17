@@ -239,6 +239,7 @@ json TaskManager::to_json(int map_cols) const
         // task.push_back(t->locations.front()/map_cols);
         // task.push_back(t->locations.front()%map_cols);
         task.push_back(t->t_revealed);
+        task.push_back(t->t_deadline);
         json locs = json::array();
         for (auto loc: t->locations)
         {

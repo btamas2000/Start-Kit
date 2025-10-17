@@ -2,7 +2,7 @@
     "mapFile": "maps/warehouse_small.map",
     "agentFile": "agents/warehouse_small_10.agents",
     "teamSize": 10,
-    "taskFile": "tasks/warehouse_small.tasks",
+    "taskFile": "tasks/amazon_small_tasks.tasks",
     "numTasksReveal": 1.5,
     "version": "2024 LoRR"
 }
