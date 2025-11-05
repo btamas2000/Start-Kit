@@ -52,7 +52,8 @@ int main(int argc, char **argv)
         ("planTimeLimit,t", po::value<int>()->default_value(1000), "the time limit for planner in milliseconds")
         ("preprocessTimeLimit,p", po::value<int>()->default_value(30000), "the time limit for preprocessing in milliseconds")
         ("logFile,l", po::value<std::string>()->default_value(""), "redirect stdout messages into the specified log file")
-        ("logDetailLevel,d", po::value<int>()->default_value(1), "the minimum severity level of log messages to display, 1--showing all the messages, 2--showing warnings and fatal errors, 3--showing fatal errors only");
+        ("logDetailLevel,d", po::value<int>()->default_value(1), "the minimum severity level of log messages to display, 1--showing all the messages, 2--showing warnings and fatal errors, 3--showing fatal errors only")
+        ("schedulerType,q", po::value<int>()->default_value(1), "the task scheduler type, 1--DefaultScheduler, 2--HungarianScheduler, 3--AuctionScheduler");
     clock_t start_time = clock();
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
