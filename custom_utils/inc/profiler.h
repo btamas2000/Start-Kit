@@ -6,6 +6,7 @@
 #include <atomic>
 #include <iostream>
 #include <memory>
+#include <vector>
 
 namespace custom_utils {
 namespace profiler {
@@ -77,7 +78,7 @@ private:
         }
         // create
         auto s = std::make_shared<Stat>();
-        std::lock_guard<std::mutex> lg(m_);
+        //std::lock_guard<std::mutex> lg(m_);
         auto[it, inserted] = stats_.emplace(name, s);
         return it->second;
     }

@@ -8,13 +8,15 @@
 
 static const int LARGE_COST = 1000000000; // avoid INT_MAX arithmetic issues
 static const double CONGESTION_WEIGHT = 2.0; // how much to weight congestion vs distance
+static const double DEADLINE_WEIGHT = 500.0; // penalty per timestep of deadline urgency
+static const int DEADLINE_CRITICAL_THRESHOLD = 50; // timesteps before deadline to consider critical
 
 // Number of promising assignments to evaluate with flow-aware A* per agent
 // Higher values provide better congestion avoidance but increase computation time
 // - TOP_K = 1: Fastest, only checks closest task, good for sparse environments
 // - TOP_K = 3: Balanced, checks 3 closest tasks, good for moderate congestion
 // - TOP_K = 5+: Thorough but slower, better for dense environments with heavy congestion
-static const int TOP_K = 3;
+static const int TOP_K = 1; // Reduced to 1 for speed, focus on deadline prioritization
 
 // Store TrajLNS instance as static to persist between calls
 static DefaultPlanner::TrajLNS trajLNS;
@@ -35,7 +37,7 @@ void HungarianScheduler::hun_schedule_initialize(int preprocess_time_limit, Shar
         searchMem.init(env->map.size());
         initialized = true;
     }
-    g_profiler.report();
+    //g_profiler.report();
 }
 
 // Compute cost considering both distance and congestion using flow-aware A*
@@ -85,6 +87,34 @@ static int compute_basic_cost(SharedEnvironment* env, int agent_id, int task_id)
     return makespan;
 }
 
+// Compute cost with deadline urgency factored in
+static int compute_deadline_aware_cost(SharedEnvironment* env, int agent_id, int task_id, int current_timestep)
+{
+    auto deadline_timer = hung_prof.scoped("deadline");
+    int makespan = compute_basic_cost(env, agent_id, task_id);
+    
+    // Add deadline penalty if task has a deadline
+    const auto& task = env->task_pool[task_id];
+    if (task.t_deadline > 0) {
+        int deadline_absolute = task.t_revealed + task.t_deadline;
+        int estimated_completion = current_timestep + makespan;
+        int slack = deadline_absolute - estimated_completion;
+        
+        // Penalize tasks that might miss deadline or have tight deadlines
+        if (slack < 0) {
+            // Already going to miss deadline - very high penalty
+            makespan += LARGE_COST / 2;
+        } else if (slack < DEADLINE_CRITICAL_THRESHOLD) {
+            // Tight deadline - add penalty inversely proportional to slack
+            int urgency_penalty = (int)(DEADLINE_WEIGHT * (DEADLINE_CRITICAL_THRESHOLD - slack));
+            makespan += urgency_penalty;
+        }
+    }
+    
+    (void)deadline_timer;
+    return makespan;
+}
+
 // Store promising assignments for later flow-aware evaluation
 struct Assignment {
     int agent_idx;
@@ -97,7 +127,7 @@ struct Assignment {
 
 static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env, 
     const std::vector<int>& free_agents, const std::vector<int>& free_tasks,
-    DefaultPlanner::TrajLNS& lns, DefaultPlanner::MemoryPool& mem)
+    DefaultPlanner::TrajLNS& lns, DefaultPlanner::MemoryPool& mem, int current_timestep)
 {
     int n = (int)free_agents.size();
     int m = (int)free_tasks.size();
@@ -109,7 +139,7 @@ static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env,
     std::vector<std::vector<int>> cost_matrix(max_dim, std::vector<int>(max_dim, LARGE_COST));
     std::vector<std::vector<Assignment>> promising(n); // Store promising assignments per agent
 
-    // First pass: compute basic costs and find promising assignments
+    // First pass: compute deadline-aware costs and find promising assignments
     for (int i = 0; i < max_dim; i++) {
         if (i >= n) {
             // dummy agent
@@ -121,9 +151,10 @@ static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env,
                     cost_matrix[i][j] = LARGE_COST; // dummy task
                 } else {
                     int task_id = free_tasks[j];
-                    int basic_cost = compute_basic_cost(env, agent_id, task_id);
-                    cost_matrix[i][j] = basic_cost; // Start with basic cost
-                    promising[i].push_back({i, j, basic_cost});
+                    // Use deadline-aware cost instead of basic cost
+                    int deadline_cost = compute_deadline_aware_cost(env, agent_id, task_id, current_timestep);
+                    cost_matrix[i][j] = deadline_cost;
+                    promising[i].push_back({i, j, deadline_cost});
                 }
             }
             // Sort and keep top K promising assignments for this agent
@@ -134,7 +165,9 @@ static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env,
         }
     }
 
-    // Second pass: evaluate promising assignments with flow-aware A*
+    // Second pass: optionally refine with flow-aware costs for very promising assignments
+    // (Currently disabled to prioritize speed and deadline awareness over congestion)
+    /*
     for (int i = 0; i < n; i++) {
         for (const auto& p : promising[i]) {
             int agent_id = free_agents[p.agent_idx];
@@ -143,12 +176,14 @@ static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env,
             cost_matrix[p.agent_idx][p.task_idx] = compute_flow_aware_cost(env, agent_id, task_id, lns, mem);
         }
     }
+    */
 
     return cost_matrix;
 }
 
 std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& cost_matrix)
 {
+    auto hunalg_timer = hung_prof.scoped("hunalg");
     int n = (int)cost_matrix.size();
     int m = n; // square matrix
     std::vector<int> assignment(n, -1);
@@ -201,6 +236,7 @@ std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& cost_ma
             assignment[p[j] - 1] = j - 1;
         }
     }
+    (void)hunalg_timer;
     return assignment;
 }
 
@@ -223,8 +259,11 @@ void HungarianScheduler::hun_schedule_plan(int time_limit, std::vector<int> & pr
         return;
     }
 
-    // Get cost matrix using flow-aware costs
-    auto cost_matrix = build_cost_matrix(env, free_agents_list, free_tasks_list, trajLNS, searchMem);
+    // Get current timestep for deadline calculations
+    int current_timestep = env->curr_timestep;
+
+    // Get cost matrix using deadline-aware costs
+    auto cost_matrix = build_cost_matrix(env, free_agents_list, free_tasks_list, trajLNS, searchMem, current_timestep);
     auto assignment = HungarianAlgorithm(cost_matrix);
 
     // Update flow information for assigned paths and map assignments
@@ -279,4 +318,6 @@ void HungarianScheduler::hun_schedule_plan(int time_limit, std::vector<int> & pr
             proposed_schedule[agent_id] = -1;
         }
     }
+
+    g_profiler.report();
 }
