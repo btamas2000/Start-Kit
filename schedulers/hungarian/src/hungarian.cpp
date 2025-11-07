@@ -18,7 +18,7 @@ static const int DEADLINE_CRITICAL_THRESHOLD = 15; // timesteps before deadline 
 // - TOP_K = 1: Fastest, only checks closest task, good for sparse environments
 // - TOP_K = 3: Balanced, checks 3 closest tasks, good for moderate congestion
 // - TOP_K = 5+: Thorough but slower, better for dense environments with heavy congestion
-static const int TOP_K = 1; // Reduced to 1 for speed, focus on deadline prioritization
+static const int TOP_K = 1; // Reduced to 1 for fastest performance
 
 // Store TrajLNS instance as static to persist between calls
 static DefaultPlanner::TrajLNS trajLNS;
@@ -30,8 +30,8 @@ static std::unordered_set<int> free_agents;
 static std::unordered_set<int> free_tasks;
 
 // Lookahead settings for considering busy agents
-static const int LOOKAHEAD_TIMESTEPS = 5; // Consider agents finishing within this many timesteps
-static const double DEFER_THRESHOLD = 0.05; // Defer if busy agent cost is this much better (5% improvement)
+static const int LOOKAHEAD_TIMESTEPS = 10; // Consider agents finishing within this many timesteps
+static const double DEFER_THRESHOLD = 0.1; // Defer if busy agent cost is this much better (10% improvement)
 
 // Profiler instances for this module
 static custom_utils::profiler::Profiler g_profiler;
@@ -48,53 +48,6 @@ void HungarianScheduler::hun_schedule_initialize(int preprocess_time_limit, Shar
         initialized = true;
     }
     //g_profiler.report();
-}
-
-// Compute cost considering both distance and congestion using flow-aware A*
-static int compute_flow_aware_cost(SharedEnvironment* env, int agent_id, int task_id,
-                                 DefaultPlanner::TrajLNS& lns, DefaultPlanner::MemoryPool& mem)
-{
-    auto t_start = std::chrono::steady_clock::now();
-    // module-level profiler
-    auto flow_timer = hung_prof.scoped("flow.total");
-
-    int makespan = 0;
-    int c_loc = env->curr_states.at(agent_id).location;
-    DefaultPlanner::Traj path;
-
-    // For each location in the task, run flow-aware A* to get there
-    for (int loc : env->task_pool[task_id].locations) {
-        auto& ht = DefaultPlanner::global_heuristictable[loc];
-        if (ht.empty()) {
-            DefaultPlanner::init_heuristic(ht, env, loc);
-        }
-        path.clear();
-        // time the A* call specifically
-        auto astar_timer = hung_prof.scoped("flow.astar");
-        auto goal_node = DefaultPlanner::astar(env, lns.flow, ht, path, mem, c_loc, loc, &lns.neighbors);
-        (void)astar_timer; // ensure timer lives until after astar
-
-        makespan += goal_node.op_flow + goal_node.all_vertex_flow; // Add congestion costs
-        makespan += path.size() - 1; // Add path length
-        c_loc = loc;
-    }
-
-    (void)flow_timer; // ensure scoped timer records when function exits
-    return makespan;
-}
-
-// Compute basic distance-based cost without flow awareness
-static int compute_basic_cost(SharedEnvironment* env, int agent_id, int task_id)
-{
-    auto basic_timer = hung_prof.scoped("basic");
-    int makespan = 0;
-    int c_loc = env->curr_states.at(agent_id).location;
-    for (int loc : env->task_pool[task_id].locations) {
-        makespan += DefaultPlanner::get_h(env, c_loc, loc);
-        c_loc = loc;
-    }
-    (void)basic_timer;
-    return makespan;
 }
 
 // Estimate when a busy agent will finish their current task
@@ -122,78 +75,127 @@ static int estimate_agent_finish_time(SharedEnvironment* env, int agent_id, int 
     return current_timestep + remaining_distance;
 }
 
-// Compute cost for a busy agent with deadline awareness
-// Includes: wait time until free + travel distance + deadline penalties
-static int compute_busy_agent_cost_with_deadline(SharedEnvironment* env, int agent_id, int task_id, int current_timestep)
+// STEP 1: Compute basic distance-based cost (no congestion, no deadline awareness)
+// For busy agents: includes wait time until free + travel distance
+// For free agents: just travel distance
+static int compute_basic_cost(SharedEnvironment* env, int agent_id, int task_id, int current_timestep)
 {
-    int finish_time = estimate_agent_finish_time(env, agent_id, current_timestep);
-    int wait_time = finish_time - current_timestep;
+    auto basic_timer = hung_prof.scoped("basic");
     
-    // Compute distance from where agent will be when free to the new task
-    // Use the final location of their current task (more accurate than current location)
-    int current_task_id = env->curr_task_schedule[agent_id];
+    bool is_busy = (env->curr_task_schedule[agent_id] != -1);
+    int start_time = current_timestep;
     int start_loc = env->curr_states.at(agent_id).location;
     
-    if (current_task_id != -1) {
+    // For busy agents, compute wait time and starting location
+    if (is_busy) {
+        int finish_time = estimate_agent_finish_time(env, agent_id, current_timestep);
+        int wait_time = finish_time - current_timestep;
+        start_time = finish_time;
+        
+        // Agent will be at the final location of their current task when they finish
+        int current_task_id = env->curr_task_schedule[agent_id];
         const auto& current_task = env->task_pool[current_task_id];
-        // Agent will be at the last location of their current task when they finish
         if (!current_task.locations.empty()) {
             start_loc = current_task.locations.back();
         }
     }
     
-    // Compute distance from final location of current task to new task
+    // Compute travel distance for the new task
     int c_loc = start_loc;
-    int task_distance = 0;
-    const auto& new_task = env->task_pool[task_id];
-    for (int loc : new_task.locations) {
-        task_distance += DefaultPlanner::get_h(env, c_loc, loc);
+    int travel_distance = 0;
+    const auto& task = env->task_pool[task_id];
+    for (int loc : task.locations) {
+        travel_distance += DefaultPlanner::get_h(env, c_loc, loc);
         c_loc = loc;
     }
     
-    int base_cost = wait_time + task_distance;
+    // For busy agents, include wait time in cost
+    int base_cost = (start_time - current_timestep) + travel_distance;
     
-    // Apply deadline penalty (same logic as compute_deadline_aware_cost)
-    int makespan = base_cost * 1000;
-    const auto& task = env->task_pool[task_id];
-    if (task.t_deadline > 0) {
-        int deadline_absolute = task.t_revealed + task.t_deadline;
-        // Agent will start this task at finish_time, not current_timestep
-        int estimated_completion = finish_time + task_distance;
-        
-        if (estimated_completion > deadline_absolute - DEADLINE_CRITICAL_THRESHOLD && estimated_completion <= deadline_absolute) {
-            // Tight deadline - gentle linear penalty
-            makespan = makespan / 100;
-        } else if (estimated_completion < deadline_absolute) {
-            makespan = makespan / 1000;
+    (void)basic_timer;
+    return base_cost;
+}
+
+// STEP 2: Apply congestion-aware cost modification using flow-aware A*
+// Takes basic cost and refines it by considering current congestion
+static int apply_congestion_cost(SharedEnvironment* env, int agent_id, int task_id, 
+                                 int current_timestep, DefaultPlanner::TrajLNS& lns, 
+                                 DefaultPlanner::MemoryPool& mem)
+{
+    auto flow_timer = hung_prof.scoped("flow.total");
+    
+    bool is_busy = (env->curr_task_schedule[agent_id] != -1);
+    int start_loc = env->curr_states.at(agent_id).location;
+    
+    // For busy agents, use final location of current task as starting point
+    if (is_busy) {
+        int current_task_id = env->curr_task_schedule[agent_id];
+        const auto& current_task = env->task_pool[current_task_id];
+        if (!current_task.locations.empty()) {
+            start_loc = current_task.locations.back();
         }
     }
     
+    int makespan = 0;
+    int c_loc = start_loc;
+    DefaultPlanner::Traj path;
+    
+    // For each location in the task, run flow-aware A* to get there
+    for (int loc : env->task_pool[task_id].locations) {
+        auto& ht = DefaultPlanner::global_heuristictable[loc];
+        if (ht.empty()) {
+            DefaultPlanner::init_heuristic(ht, env, loc);
+        }
+        path.clear();
+        auto astar_timer = hung_prof.scoped("flow.astar");
+        auto goal_node = DefaultPlanner::astar(env, lns.flow, ht, path, mem, c_loc, loc, &lns.neighbors);
+        (void)astar_timer;
+        
+        makespan += goal_node.op_flow + goal_node.all_vertex_flow; // Add congestion costs
+        makespan += path.size() - 1; // Add path length
+        c_loc = loc;
+    }
+    
+    (void)flow_timer;
     return makespan;
 }
 
-// Compute cost with deadline urgency factored in (gentle approach)
-static int compute_deadline_aware_cost(SharedEnvironment* env, int agent_id, int task_id, int current_timestep)
+// STEP 3: Apply deadline-aware cost modification
+// Takes a cost and applies penalties/bonuses based on deadline urgency
+static int apply_deadline_cost(int base_cost, SharedEnvironment* env, int agent_id, 
+                               int task_id, int current_timestep)
 {
     auto deadline_timer = hung_prof.scoped("deadline");
-    int makespan = compute_basic_cost(env, agent_id, task_id) * 1000;
     
-    // Add gentle deadline penalty if task has a deadline
+    // Start with base cost scaled up for precision
+    int modified_cost = base_cost * 1000;
+    
     const auto& task = env->task_pool[task_id];
     if (task.t_deadline > 0) {
         int deadline_absolute = task.t_revealed + task.t_deadline;
-        int estimated_completion = current_timestep + makespan;
         
-        if (estimated_completion > deadline_absolute - DEADLINE_CRITICAL_THRESHOLD && estimated_completion <= deadline_absolute) {
-            // Tight deadline - gentle linear penalty
-            makespan = makespan / 100; //
-        } else if (estimated_completion < deadline_absolute) {
-            makespan = makespan / 1000;
+        // Calculate when the task would be completed
+        bool is_busy = (env->curr_task_schedule[agent_id] != -1);
+        int start_time = current_timestep;
+        if (is_busy) {
+            start_time = estimate_agent_finish_time(env, agent_id, current_timestep);
         }
+        int estimated_completion = start_time + base_cost;
+        
+        // Apply deadline-based scaling
+        if (estimated_completion > deadline_absolute - DEADLINE_CRITICAL_THRESHOLD 
+            && estimated_completion <= deadline_absolute) {
+            // Tight deadline - higher priority (moderate discount)
+            modified_cost = modified_cost / 100;
+        } else if (estimated_completion < deadline_absolute) {
+            // Comfortable deadline - lower priority (strong discount)
+            modified_cost = modified_cost / 1000;
+        }
+        // If estimated_completion > deadline_absolute, keep base cost (deadline will be missed)
     }
     
     (void)deadline_timer;
-    return makespan;
+    return modified_cost;
 }
 
 // Store promising assignments for later flow-aware evaluation
@@ -206,69 +208,81 @@ struct Assignment {
     }
 };
 
+// Build cost matrix without dummy padding (returns n x m matrix)
 static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env, 
     const std::vector<int>& combined_agents_list, const std::vector<int>& free_tasks_list,
     DefaultPlanner::TrajLNS& lns, DefaultPlanner::MemoryPool& mem, int current_timestep)
 {
     int n = (int)combined_agents_list.size();
     int m = (int)free_tasks_list.size();
-    int max_dim = std::max(n, m);
     
     // Use smaller TOP_K if we have few tasks to avoid unnecessary computation
     int effective_top_k = std::min(TOP_K, m);
 
-    std::vector<std::vector<int>> cost_matrix(max_dim, std::vector<int>(max_dim, LARGE_COST));
+    // Build n x m matrix (no dummy padding yet)
+    std::vector<std::vector<int>> cost_matrix(n, std::vector<int>(m, LARGE_COST));
     std::vector<std::vector<Assignment>> promising(n); // Store promising assignments per agent
 
-    // First pass: compute deadline-aware costs and find promising assignments
-    for (int i = 0; i < max_dim; i++) {
-        if (i >= n) {
-            // dummy agent
-            for (int j = 0; j < max_dim; j++) cost_matrix[i][j] = LARGE_COST;
-        } else {
-            int agent_id = combined_agents_list[i];
+    // First pass: compute basic costs (distance-based) to find promising assignments
+    for (int i = 0; i < n; i++) {
+        int agent_id = combined_agents_list[i];
+        
+        for (int j = 0; j < m; j++) {
+            int task_id = free_tasks_list[j];
             
-            // Check if this agent is busy (not free)
-            bool is_busy = (env->curr_task_schedule[agent_id] != -1);
+            // Pipeline: basic cost only (for initial sorting)
+            int basic_cost = compute_basic_cost(env, agent_id, task_id, current_timestep);
             
-            for (int j = 0; j < max_dim; j++) {
-                if (j >= m) {
-                    cost_matrix[i][j] = LARGE_COST; // dummy task
-                } else {
-                    int task_id = free_tasks_list[j];
-                    
-                    int cost;
-                    if (is_busy) {
-                        // For busy (near-finish) agents, use busy agent cost with deadline awareness
-                        cost = compute_busy_agent_cost_with_deadline(env, agent_id, task_id, current_timestep);
-                    } else {
-                        // For free agents, use standard deadline-aware cost
-                        cost = compute_deadline_aware_cost(env, agent_id, task_id, current_timestep);
-                    }
-                    
-                    cost_matrix[i][j] = cost;
-                    promising[i].push_back({i, j, cost});
-                }
-            }
-            // Sort and keep top K promising assignments for this agent
-            std::sort(promising[i].begin(), promising[i].end());
-            if (promising[i].size() > effective_top_k) {
-                promising[i].resize(effective_top_k);
-            }
+            cost_matrix[i][j] = basic_cost;
+            promising[i].push_back({i, j, basic_cost});
+        }
+        // Sort and keep top K promising assignments for this agent based on distance
+        std::sort(promising[i].begin(), promising[i].end());
+        if (promising[i].size() > effective_top_k) {
+            promising[i].resize(effective_top_k);
         }
     }
 
-    // Second pass: optionally refine with flow-aware costs for very promising assignments
+    // Second pass: refine with full pipeline for very promising assignments
+    // Pipeline: basic cost -> congestion cost -> deadline cost
     for (int i = 0; i < n; i++) {
         for (const auto& p : promising[i]) {
             int agent_id = combined_agents_list[p.agent_idx];
             int task_id = free_tasks_list[p.task_idx];
-            // Update cost with flow-aware computation only for promising assignments
-            cost_matrix[p.agent_idx][p.task_idx] = compute_flow_aware_cost(env, agent_id, task_id, lns, mem);
+            
+            // Step 1: Get congestion-aware cost (flow-aware A*)
+            int congestion_cost = apply_congestion_cost(env, agent_id, task_id, current_timestep, lns, mem);
+            
+            // Step 2: Apply deadline modification for radical prioritization
+            int final_cost = apply_deadline_cost(congestion_cost, env, agent_id, task_id, current_timestep);
+            
+            // Update cost matrix with fully refined cost
+            cost_matrix[p.agent_idx][p.task_idx] = final_cost;
         }
     }
 
     return cost_matrix;
+}
+
+// Add dummy rows/columns to make the matrix square for Hungarian algorithm
+static std::vector<std::vector<int>> pad_to_square(const std::vector<std::vector<int>>& cost_matrix)
+{
+    if (cost_matrix.empty()) return cost_matrix;
+    
+    int n = (int)cost_matrix.size();
+    int m = (int)cost_matrix[0].size();
+    int max_dim = std::max(n, m);
+    
+    std::vector<std::vector<int>> padded(max_dim, std::vector<int>(max_dim, LARGE_COST));
+    
+    // Copy original costs
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < m; j++) {
+            padded[i][j] = cost_matrix[i][j];
+        }
+    }
+    
+    return padded;
 }
 
 std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& cost_matrix)
@@ -460,7 +474,10 @@ void HungarianScheduler::hun_schedule_plan(int time_limit, std::vector<int> & pr
     
     // STEP 5: Build cost matrix with only free agents and filtered tasks
     auto cost_matrix = build_cost_matrix(env, agents_for_assignment, tasks_for_assignment, trajLNS, searchMem, current_timestep);
-    auto assignment = HungarianAlgorithm(cost_matrix);
+    
+    // Pad to square matrix for Hungarian algorithm
+    auto padded_matrix = pad_to_square(cost_matrix);
+    auto assignment = HungarianAlgorithm(padded_matrix);
 
     // STEP 6: Process assignments for free agents only
     int assignment_n = (int)agents_for_assignment.size();
