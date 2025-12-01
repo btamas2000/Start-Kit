@@ -5,6 +5,7 @@
 #include "planner.h"
 #include "const.h"
 
+
 /**
  * Initialises the MAPF planner with a given time limit for preprocessing.
  * 
@@ -21,9 +22,9 @@ void MAPFPlanner::initialize(int preprocess_time_limit)
 }
 
 /**
- * Plans a path using default planner
+ * Plans a path using custom planner
  * 
- * This function performs path planning within the timelimit given, and call the plan function in default planner.
+ * This function performs path planning within the timelimit given, and call the plan function in custom planner.
  * The planned actions are output to the provided actions vector.
  * 
  * @param time_limit The time limit allocated for planning (in milliseconds).

@@ -7,18 +7,22 @@
 #include "profiler.h"
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
 
 static const int LARGE_COST = 10000000; // avoid INT_MAX arithmetic issues
 static const double CONGESTION_WEIGHT = 2.0; // how much to weight congestion vs distance
 static const double DEADLINE_WEIGHT = 10.0; // gentle penalty for deadline urgency (not too aggressive)
 static const int DEADLINE_CRITICAL_THRESHOLD = 15; // timesteps before deadline to consider critical
+// New: cap congestion influence so it nudges but doesn't dominate distance
+static const double CONGESTION_ALPHA = 0.5; // sensitivity of congestion vs distance (0.0-1.0 typical)
+static const double CONGESTION_CAP = 0.05;   // maximum fractional increase over basic cost (e.g., 0.3 => +30%)
 
 // Number of promising assignments to evaluate with flow-aware A* per agent
 // Higher values provide better congestion avoidance but increase computation time
 // - TOP_K = 1: Fastest, only checks closest task, good for sparse environments
 // - TOP_K = 3: Balanced, checks 3 closest tasks, good for moderate congestion
 // - TOP_K = 5+: Thorough but slower, better for dense environments with heavy congestion
-static const int TOP_K = 1; // Reduced to 1 for fastest performance
+static const int TOP_K = 3; // Reduced to 3 for balanced performance
 
 // Store TrajLNS instance as static to persist between calls
 static DefaultPlanner::TrajLNS trajLNS;
@@ -31,7 +35,7 @@ static std::unordered_set<int> free_tasks;
 
 // Lookahead settings for considering busy agents
 static const int LOOKAHEAD_TIMESTEPS = 10; // Consider agents finishing within this many timesteps
-static const double DEFER_THRESHOLD = 0.1; // Defer if busy agent cost is this much better (10% improvement)
+static const double DEFER_THRESHOLD = 0.4; // Defer if busy agent cost is this much better (40% improvement)
 
 // Profiler instances for this module
 static custom_utils::profiler::Profiler g_profiler;
@@ -136,7 +140,9 @@ static int apply_congestion_cost(SharedEnvironment* env, int agent_id, int task_
         }
     }
     
-    int makespan = 0;
+    // We only want congestion penalty here (no distance). We'll sum per-segment
+    // (op_flow + all_vertex_flow) as a proxy for congestion exposure.
+    int congestion_penalty = 0;
     int c_loc = start_loc;
     DefaultPlanner::Traj path;
     
@@ -150,14 +156,13 @@ static int apply_congestion_cost(SharedEnvironment* env, int agent_id, int task_
         auto astar_timer = hung_prof.scoped("flow.astar");
         auto goal_node = DefaultPlanner::astar(env, lns.flow, ht, path, mem, c_loc, loc, &lns.neighbors);
         (void)astar_timer;
-        
-        makespan += goal_node.op_flow + goal_node.all_vertex_flow; // Add congestion costs
-        makespan += path.size() - 1; // Add path length
+        // Accumulate only congestion-related terms
+        congestion_penalty += goal_node.op_flow + goal_node.all_vertex_flow;
         c_loc = loc;
     }
     
     (void)flow_timer;
-    return makespan;
+    return congestion_penalty;
 }
 
 // STEP 3: Apply deadline-aware cost modification
@@ -244,19 +249,32 @@ static std::vector<std::vector<int>> build_cost_matrix(SharedEnvironment* env,
     }
 
     // Second pass: refine with full pipeline for very promising assignments
-    // Pipeline: basic cost -> congestion cost -> deadline cost
+    // Pipeline: basic cost -> congestion penalty -> capped additive combination (deadline optional later)
     for (int i = 0; i < n; i++) {
         for (const auto& p : promising[i]) {
             int agent_id = combined_agents_list[p.agent_idx];
             int task_id = free_tasks_list[p.task_idx];
             
-            // Step 1: Get congestion-aware cost (flow-aware A*)
-            int congestion_cost = apply_congestion_cost(env, agent_id, task_id, current_timestep, lns, mem);
-            
-            // Step 2: Apply deadline modification for radical prioritization
-            int final_cost = apply_deadline_cost(congestion_cost, env, agent_id, task_id, current_timestep);
-            
-            // Update cost matrix with fully refined cost
+            // Retrieve previously computed basic distance cost
+            int basic_cost = cost_matrix[p.agent_idx][p.task_idx];
+
+            // Step 1: Get congestion penalty (flow-aware A*)
+            int cong_penalty = apply_congestion_cost(env, agent_id, task_id, current_timestep, lns, mem);
+
+            // Step 2: Combine with capped additive formula so congestion nudges but doesn't dominate
+            // p_norm: congestion per unit distance
+            double p_norm = (basic_cost > 0) ? (double)cong_penalty / (double)basic_cost : 0.0;
+            double capped_increase = std::min(CONGESTION_ALPHA * p_norm * (double)basic_cost, CONGESTION_CAP * (double)basic_cost);
+            int final_cost = basic_cost + (int)std::round(capped_increase);
+
+            // Optional: deadline can be re-applied here later if desired
+            // final_cost = apply_deadline_cost(final_cost, env, agent_id, task_id, current_timestep);
+
+            // std::cerr << "[Debug] Agent " << agent_id << " Task " << task_id 
+            //           << " Basic: " << basic_cost << " Cong: " << cong_penalty 
+            //           << " Final: " << final_cost << "\n";
+
+            // Update cost matrix with fully refined, capped cost
             cost_matrix[p.agent_idx][p.task_idx] = final_cost;
         }
     }
@@ -452,6 +470,7 @@ void HungarianScheduler::hun_schedule_plan(int time_limit, std::vector<int> & pr
                     
                     if (improvement > DEFER_THRESHOLD) {
                         // Exclude this task - it should wait for the busy agent
+                        std::cerr << "Task" << task_id << " deferred for busy agent " << agent_idx << "\n";
                         tasks_for_assignment_set.erase(task_id);
                     }
                 }

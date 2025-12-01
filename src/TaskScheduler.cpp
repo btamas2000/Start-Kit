@@ -19,16 +19,13 @@ void TaskScheduler::initialize(int preprocess_time_limit)
     //give at most half of the entry time_limit to scheduler;
     //-SCHEDULER_TIMELIMIT_TOLERANCE for timing error tolerance
     int limit = preprocess_time_limit/2 - DefaultPlanner::SCHEDULER_TIMELIMIT_TOLERANCE;
-    // TODO: replace or re-enable the scheduler initialization when ready to test
-    //DefaultPlanner::schedule_initialize(limit, env);
-    // (temporarily commented out so you can run the code without invoking the scheduler)
     HungarianScheduler::hun_schedule_initialize(limit, env);
 }
 
 /**
  * Plans a task schedule within a specified time limit.
  * 
- * This function schedules tasks by calling shedule_plan function in default planner with half of the given time limit,
+ * This function schedules tasks by calling hungarian2 schedule_plan function with half of the given time limit,
  * adjusted for timing error tolerance. The planned schedule is output to the provided schedule vector.
  * 
  * @param time_limit The total time limit allocated for scheduling (in milliseconds).
@@ -40,8 +37,5 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     //give at most half of the entry time_limit to scheduler;
     //-SCHEDULER_TIMELIMIT_TOLERANCE for timing error tolerance
     int limit = time_limit/2 - DefaultPlanner::SCHEDULER_TIMELIMIT_TOLERANCE;
-    // TODO: replace or re-enable the scheduler plan call when ready to test
-    //DefaultPlanner::schedule_plan(limit, proposed_schedule, env);
-    // (temporarily commented out so you can run the code without invoking the scheduler)
     HungarianScheduler::hun_schedule_plan(limit, proposed_schedule, env);
 }
