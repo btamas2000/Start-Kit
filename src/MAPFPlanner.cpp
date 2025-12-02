@@ -4,7 +4,7 @@
 //default planner includes
 #include "planner.h"
 #include "const.h"
-#include "cluster_pibt_planner.h"
+#include "cluster_pibt.h"
 
 
 /**
