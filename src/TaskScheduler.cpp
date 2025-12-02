@@ -2,7 +2,7 @@
 
 #include "scheduler.h"
 #include "const.h"
-#include "hungarian.h"
+#include "hungarian2.h"
 
 /**
  * Initializes the task scheduler with a given time limit for preprocessing.
@@ -19,7 +19,7 @@ void TaskScheduler::initialize(int preprocess_time_limit)
     //give at most half of the entry time_limit to scheduler;
     //-SCHEDULER_TIMELIMIT_TOLERANCE for timing error tolerance
     int limit = preprocess_time_limit/2 - DefaultPlanner::SCHEDULER_TIMELIMIT_TOLERANCE;
-    HungarianScheduler::hun_schedule_initialize(limit, env);
+    HungarianScheduler2::hun_schedule_initialize(limit, env);
 }
 
 /**
@@ -37,5 +37,5 @@ void TaskScheduler::plan(int time_limit, std::vector<int> & proposed_schedule)
     //give at most half of the entry time_limit to scheduler;
     //-SCHEDULER_TIMELIMIT_TOLERANCE for timing error tolerance
     int limit = time_limit/2 - DefaultPlanner::SCHEDULER_TIMELIMIT_TOLERANCE;
-    HungarianScheduler::hun_schedule_plan(limit, proposed_schedule, env);
+    HungarianScheduler2::hun_schedule_plan(limit, proposed_schedule, env);
 }

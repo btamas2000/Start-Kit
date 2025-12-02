@@ -4,6 +4,7 @@
 //default planner includes
 #include "planner.h"
 #include "const.h"
+#include "cluster_pibt_planner.h"
 
 
 /**
@@ -17,7 +18,8 @@ void MAPFPlanner::initialize(int preprocess_time_limit)
 {
     // use the remaining entry time limit (after task scheduling) for path planning, -PLANNER_TIMELIMIT_TOLERANCE for timing error tolerance;
     int limit = preprocess_time_limit - std::chrono::duration_cast<milliseconds>(std::chrono::steady_clock::now() - env->plan_start_time).count() - DefaultPlanner::PLANNER_TIMELIMIT_TOLERANCE;
-    DefaultPlanner::initialize(limit, env);
+    // DefaultPlanner::initialize(limit, env);
+    ClusterPIBTPlanner::initialize(limit, env);
     return;
 }
 
@@ -34,7 +36,7 @@ void MAPFPlanner::plan(int time_limit,vector<Action> & actions)
 {
     // use the remaining time after task schedule for path planning, -PLANNER_TIMELIMIT_TOLERANCE for timing error tolerance;
     int limit = time_limit - std::chrono::duration_cast<milliseconds>(std::chrono::steady_clock::now() - env->plan_start_time).count() - DefaultPlanner::PLANNER_TIMELIMIT_TOLERANCE;
-
-    DefaultPlanner::plan(limit, actions, env);
+    // DefaultPlanner::plan(limit, actions, env);
+    ClusterPIBTPlanner::plan(limit, actions, env);
     return;
 }

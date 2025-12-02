@@ -1,5 +1,4 @@
 #include "../inc/cluster_heuristics.h"
-#include <algorithm>
 #include <queue>
 #include <limits>
 #include <cmath>
@@ -14,217 +13,557 @@ ClusterHeuristics& ClusterHeuristics::getInstance() {
 
 // Private constructor
 ClusterHeuristics::ClusterHeuristics() 
-    : initialized_(false), rows_(0), cols_(0) {
+    : initialized_(false), pipeline_(nullptr), env_(nullptr) {
 }
 
-void ClusterHeuristics::initialize(const ClusteringPipeline& pipeline) {
-    // Copy data from clustering pipeline
-    rows_ = pipeline.getRows();
-    cols_ = pipeline.getCols();
-    clusters_ = pipeline.getClusters();
-    cellToClusterMap_ = pipeline.getCellToClusterMap();
-    distances_ = pipeline.getDistances();
+void ClusterHeuristics::initialize(const std::vector<int>& map, int rows, int cols, SharedEnvironment* env) {
+    // Skip if already initialized
+    if (initialized_) {
+        return;
+    }
     
-    // Precompute heuristic data
-    computeClusterCentroids();
-    computeInterClusterDistances();
-    // buildIntraClusterDistances(); // Optional, uncomment if needed
+    // Store reference to shared environment
+    env_ = env;
+    
+    // Create clustering pipeline and run clustering
+    pipeline_ = new ClusteringPipeline(map, rows, cols);
+    pipeline_->runClustering();
+    
+    // Precompute cluster pair distances
+    precomputeClusterDistances();
+    
+    // Initialize capacity scores for all clusters
+    const auto& clusters = pipeline_->getClusters();
+    for (const auto& cluster : clusters) {
+        // Capacity is based on cluster size weighted by clearance quality
+        // Higher maxima = more open space = higher capacity
+        // Normalize maxima to [0, 1] range (assuming maxima is clearance value)
+        float normalizedMaxima = std::min(cluster.maxima / 10.0f, 1.0f);
+        float capacityScore = cluster.size * (0.5f + 0.5f * normalizedMaxima);
+        
+        clusterCongestion_[cluster.id] = ClusterCongestion(cluster.id, capacityScore);
+    }
     
     initialized_ = true;
 }
 
-void ClusterHeuristics::computeClusterCentroids() {
-    clusterCentroids_.resize(clusters_.size());
+void ClusterHeuristics::precomputeClusterDistances() {
+    if (!pipeline_) return;
     
-    for (const auto& cluster : clusters_) {
-        if (cluster.cells.empty()) {
-            clusterCentroids_[cluster.id] = -1;
-            continue;
-        }
-        
-        // Find cell closest to geometric center
-        int sumRow = 0, sumCol = 0;
-        for (int loc : cluster.cells) {
-            sumRow += getRow(loc);
-            sumCol += getCol(loc);
-        }
-        
-        int centerRow = sumRow / cluster.cells.size();
-        int centerCol = sumCol / cluster.cells.size();
-        int centerLoc = getLoc(centerRow, centerCol);
-        
-        // Find actual cell in cluster closest to center
-        int bestLoc = cluster.cells[0];
-        int bestDist = manhattanDistance(bestLoc, centerLoc);
-        
-        for (int loc : cluster.cells) {
-            int dist = manhattanDistance(loc, centerLoc);
-            if (dist < bestDist) {
-                bestDist = dist;
-                bestLoc = loc;
+    const auto& clusters = pipeline_->getClusters();
+    
+    // For each cluster, process its neighbors
+    for (const auto& cluster : clusters) {
+        for (int neighborID : cluster.neighbors) {
+            // Only process each pair once (smaller ID first)
+            if (cluster.id >= neighborID) continue;
+            
+            // Find boundary cells between these two clusters
+            auto boundaryPairs = findBoundaryCells(cluster.id, neighborID);
+            
+            if (boundaryPairs.empty()) continue;
+            
+            // Find the best (shortest) path through boundary cells
+            int minDistance = std::numeric_limits<int>::max();
+            int bestEntryCell = -1;
+            int bestExitCell = -1;
+            
+            for (const auto& [cellA, cellB] : boundaryPairs) {
+                // Compute distance: cellA -> cellB
+                int dist = computePathDistance(cellA, cellB);
+                if (dist >= 0 && dist < minDistance) {
+                    minDistance = dist;
+                    bestEntryCell = cellA;
+                    bestExitCell = cellB;
+                }
+            }
+            
+            // Store the result
+            if (minDistance != std::numeric_limits<int>::max()) {
+                ClusterPairDistance cpd;
+                cpd.clusterA = cluster.id;
+                cpd.clusterB = neighborID;
+                cpd.entryCell = bestEntryCell;
+                cpd.exitCell = bestExitCell;
+                cpd.distance = minDistance;
+                
+                // Store with ordered pair as key
+                clusterDistances_[{cluster.id, neighborID}] = cpd;
             }
         }
-        
-        clusterCentroids_[cluster.id] = bestLoc;
     }
 }
 
-void ClusterHeuristics::computeInterClusterDistances() {
-    // BFS from each cluster to compute abstract distances
-    for (const auto& cluster : clusters_) {
-        std::vector<int> clusterDist(clusters_.size(), -1);
-        std::queue<int> q;
+std::vector<std::pair<int, int>> ClusterHeuristics::findBoundaryCells(int clusterA, int clusterB) const {
+    if (!pipeline_) return {};
+    
+    const auto& clusters = pipeline_->getClusters();
+    const auto& map = pipeline_->getMap();
+    const auto& cellToCluster = pipeline_->getCellToClusterMap();
+    int rows = pipeline_->getRows();
+    int cols = pipeline_->getCols();
+    
+    std::vector<std::pair<int, int>> boundaryPairs;
+    
+    // Find cluster A
+    const Cluster* cA = nullptr;
+    for (const auto& c : clusters) {
+        if (c.id == clusterA) {
+            cA = &c;
+            break;
+        }
+    }
+    if (!cA) return {};
+    
+    // For each cell in cluster A
+    for (int cellA : cA->cells) {
+        int row = cellA / cols;
+        int col = cellA % cols;
         
-        clusterDist[cluster.id] = 0;
-        q.push(cluster.id);
+        // Check 4-connected neighbors
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
         
-        while (!q.empty()) {
-            int curr = q.front();
-            q.pop();
+        for (int d = 0; d < 4; d++) {
+            int newRow = row + dr[d];
+            int newCol = col + dc[d];
             
-            for (int neighbor : clusters_[curr].neighbors) {
-                if (clusterDist[neighbor] == -1) {
-                    clusterDist[neighbor] = clusterDist[curr] + 1;
-                    q.push(neighbor);
+            if (newRow < 0 || newRow >= rows || newCol < 0 || newCol >= cols) continue;
+            
+            int neighborLoc = newRow * cols + newCol;
+            
+            // Check if neighbor belongs to cluster B
+            if (cellToCluster[neighborLoc] == clusterB && map[neighborLoc] == 0) {
+                boundaryPairs.push_back({cellA, neighborLoc});
+            }
+        }
+    }
+    
+    return boundaryPairs;
+}
+
+int ClusterHeuristics::computePathDistance(int startLoc, int goalLoc) const {
+    if (!pipeline_) return -1;
+    
+    const auto& map = pipeline_->getMap();
+    const auto& cellToCluster = pipeline_->getCellToClusterMap();
+    int rows = pipeline_->getRows();
+    int cols = pipeline_->getCols();
+    
+    // Get cluster IDs for start and goal to constrain BFS
+    int clusterA = cellToCluster[startLoc];
+    int clusterB = cellToCluster[goalLoc];
+    
+    // BFS to find shortest path, constrained to the two clusters
+    std::queue<std::pair<int, int>> q; // (location, distance)
+    std::vector<bool> visited(map.size(), false);
+    
+    q.push({startLoc, 0});
+    visited[startLoc] = true;
+    
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    
+    while (!q.empty()) {
+        auto [loc, dist] = q.front();
+        q.pop();
+        
+        if (loc == goalLoc) {
+            return dist;
+        }
+        
+        int row = loc / cols;
+        int col = loc % cols;
+        
+        for (int d = 0; d < 4; d++) {
+            int newRow = row + dr[d];
+            int newCol = col + dc[d];
+            
+            if (newRow < 0 || newRow >= rows || newCol < 0 || newCol >= cols) continue;
+            
+            int newLoc = newRow * cols + newCol;
+            
+            // Only traverse free cells that belong to either cluster A or B
+            if (!visited[newLoc] && map[newLoc] == 0) {
+                int cellCluster = cellToCluster[newLoc];
+                if (cellCluster == clusterA || cellCluster == clusterB) {
+                    visited[newLoc] = true;
+                    q.push({newLoc, dist + 1});
                 }
             }
         }
-        
-        // Store distances
-        for (size_t i = 0; i < clusterDist.size(); i++) {
-            if (clusterDist[i] != -1) {
-                interClusterDistances_[cluster.id][i] = clusterDist[i];
-            }
-        }
     }
+    
+    return -1; // No path found
 }
 
-void ClusterHeuristics::buildIntraClusterDistances() {
-    // Optional: Build full distance tables for small clusters
-    // Only compute for clusters smaller than a threshold
-    const int MAX_CLUSTER_SIZE = 100;
+int ClusterHeuristics::getClusterDistance(int clusterA, int clusterB) const {
+    if (!initialized_) return -1;
     
-    for (const auto& cluster : clusters_) {
-        if (cluster.size > MAX_CLUSTER_SIZE) continue;
-        
-        // Build distance table for this cluster
-        std::vector<std::vector<int>> distTable(cluster.cells.size(), 
-                                                  std::vector<int>(cluster.cells.size(), 0));
-        
-        for (size_t i = 0; i < cluster.cells.size(); i++) {
-            for (size_t j = i + 1; j < cluster.cells.size(); j++) {
-                int dist = manhattanDistance(cluster.cells[i], cluster.cells[j]);
-                distTable[i][j] = dist;
-                distTable[j][i] = dist;
-            }
-        }
-        
-        intraClusterDistTables_[cluster.id] = distTable;
-    }
-}
-
-int ClusterHeuristics::getHeuristic(int fromLoc, int toLoc) const {
-    if (!initialized_) return manhattanDistance(fromLoc, toLoc);
-    
-    int fromCluster = cellToClusterMap_[fromLoc];
-    int toCluster = cellToClusterMap_[toLoc];
-    
-    // If in same cluster, use Manhattan distance (or intra-cluster table if available)
-    if (fromCluster == toCluster) {
-        return getIntraClusterDistance(fromLoc, toLoc, fromCluster);
+    // Ensure ordered pair (smaller ID first)
+    if (clusterA > clusterB) {
+        std::swap(clusterA, clusterB);
     }
     
-    // Different clusters: use abstract distance + boundary estimates
-    int abstractDist = getInterClusterDistance(fromCluster, toCluster);
-    
-    // Add distances from locations to their cluster centroids
-    int fromToCentroid = manhattanDistance(fromLoc, clusterCentroids_[fromCluster]);
-    int toToCentroid = manhattanDistance(toLoc, clusterCentroids_[toCluster]);
-    
-    // Estimate based on cluster graph distance and local distances
-    // This is admissible but not necessarily tight
-    return fromToCentroid + abstractDist * 10 + toToCentroid;  // Scale abstract distance
-}
-
-int ClusterHeuristics::getIntraClusterDistance(int fromLoc, int toLoc, int clusterID) const {
-    // Check if we have a precomputed table
-    auto it = intraClusterDistTables_.find(clusterID);
-    if (it != intraClusterDistTables_.end()) {
-        // Find indices in cluster cells
-        const auto& cluster = clusters_[clusterID];
-        auto fromIt = std::find(cluster.cells.begin(), cluster.cells.end(), fromLoc);
-        auto toIt = std::find(cluster.cells.begin(), cluster.cells.end(), toLoc);
-        
-        if (fromIt != cluster.cells.end() && toIt != cluster.cells.end()) {
-            int fromIdx = std::distance(cluster.cells.begin(), fromIt);
-            int toIdx = std::distance(cluster.cells.begin(), toIt);
-            return it->second[fromIdx][toIdx];
-        }
+    auto it = clusterDistances_.find({clusterA, clusterB});
+    if (it != clusterDistances_.end()) {
+        return it->second.distance;
     }
     
-    // Fallback to Manhattan distance
-    return manhattanDistance(fromLoc, toLoc);
-}
-
-int ClusterHeuristics::getInterClusterDistance(int fromCluster, int toCluster) const {
-    auto it = interClusterDistances_.find(fromCluster);
-    if (it != interClusterDistances_.end()) {
-        auto it2 = it->second.find(toCluster);
-        if (it2 != it->second.end()) {
-            return it2->second;
-        }
-    }
-    return -1;  // No path
+    return -1; // Not neighbors or not found
 }
 
 int ClusterHeuristics::getClusterID(int loc) const {
-    if (!initialized_ || loc < 0 || loc >= static_cast<int>(cellToClusterMap_.size())) {
-        return -1;
-    }
-    return cellToClusterMap_[loc];
+    if (!initialized_ || !pipeline_) return -1;
+    return pipeline_->getClusterID(loc);
 }
 
-const Cluster* ClusterHeuristics::getCluster(int clusterID) const {
-    if (!initialized_ || clusterID < 0 || clusterID >= static_cast<int>(clusters_.size())) {
-        return nullptr;
-    }
-    return &clusters_[clusterID];
-}
-
-bool ClusterHeuristics::areInSameCluster(int loc1, int loc2) const {
-    if (!initialized_) return false;
-    return cellToClusterMap_[loc1] == cellToClusterMap_[loc2];
-}
-
-bool ClusterHeuristics::areNeighborClusters(int cluster1, int cluster2) const {
-    if (!initialized_ || cluster1 < 0 || cluster1 >= static_cast<int>(clusters_.size())) {
-        return false;
+int ClusterHeuristics::getHeuristicDistance(int startLoc, int goalLoc) const {
+    if (!initialized_ || !pipeline_) return -1;
+    
+    // Get cluster IDs
+    int startCluster = pipeline_->getClusterID(startLoc);
+    int goalCluster = pipeline_->getClusterID(goalLoc);
+    
+    if (startCluster == -1 || goalCluster == -1) return -1;
+    
+    // Same cluster: direct BFS
+    if (startCluster == goalCluster) {
+        return computePathDistance(startLoc, goalLoc);
     }
     
-    const auto& neighbors = clusters_[cluster1].neighbors;
-    return std::find(neighbors.begin(), neighbors.end(), cluster2) != neighbors.end();
+    // Different clusters: compute distances to precomputed exit points
+    
+    // Step 1: Get distances from start location to exit points in start cluster
+    auto startExitDistances = computeDistancesToExitPoints(startLoc, startCluster);
+    if (startExitDistances.empty()) return -1;
+    
+    // Step 2: Get distances from entry points in goal cluster to goal location
+    auto goalEntryDistances = computeDistancesToExitPoints(goalLoc, goalCluster);
+    if (goalEntryDistances.empty()) return -1;
+    
+    // Step 3: Find shortest path through cluster graph incorporating start/goal distances
+    int minDistance = findClusterPath(startCluster, goalCluster, startExitDistances, goalEntryDistances);
+    
+    return minDistance;
 }
 
-int ClusterHeuristics::getClusterCentroid(int clusterID) const {
-    if (!initialized_ || clusterID < 0 || clusterID >= static_cast<int>(clusterCentroids_.size())) {
-        return -1;
+std::unordered_map<int, int> ClusterHeuristics::computeDistancesToExitPoints(int loc, int clusterID) const {
+    if (!pipeline_) return {};
+    
+    const auto& map = pipeline_->getMap();
+    const auto& cellToCluster = pipeline_->getCellToClusterMap();
+    const auto& clusters = pipeline_->getClusters();
+    int rows = pipeline_->getRows();
+    int cols = pipeline_->getCols();
+    
+    // Find current cluster
+    const Cluster* currentCluster = nullptr;
+    for (const auto& c : clusters) {
+        if (c.id == clusterID) {
+            currentCluster = &c;
+            break;
+        }
     }
-    return clusterCentroids_[clusterID];
-}
-
-int ClusterHeuristics::getDistanceTransform(int loc) const {
-    if (!initialized_ || loc < 0 || loc >= static_cast<int>(distances_.size())) {
-        return -1;
+    if (!currentCluster) return {};
+    
+    // Collect all precomputed entry/exit points for this cluster's neighbors
+    std::unordered_set<int> targetPoints;
+    for (int neighborID : currentCluster->neighbors) {
+        int cA = std::min(clusterID, neighborID);
+        int cB = std::max(clusterID, neighborID);
+        auto it = clusterDistances_.find({cA, cB});
+        if (it != clusterDistances_.end()) {
+            const auto& cpd = it->second;
+            // Add the point in our cluster (either entry or exit depending on orientation)
+            int pointInOurCluster = (cpd.clusterA == clusterID) ? cpd.entryCell : cpd.exitCell;
+            targetPoints.insert(pointInOurCluster);
+        }
     }
-    return distances_[loc];
+    
+    if (targetPoints.empty()) return {};
+    
+    // BFS to compute distances to target points
+    std::unordered_map<int, int> distances;
+    std::queue<std::pair<int, int>> q;
+    std::vector<bool> visited(map.size(), false);
+    
+    q.push({loc, 0});
+    visited[loc] = true;
+    
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    
+    while (!q.empty() && distances.size() < targetPoints.size()) {
+        auto [currentLoc, dist] = q.front();
+        q.pop();
+        
+        // Check if this is a target point
+        if (targetPoints.count(currentLoc)) {
+            distances[currentLoc] = dist;
+        }
+        
+        int row = currentLoc / cols;
+        int col = currentLoc % cols;
+        
+        // Continue BFS within cluster
+        for (int d = 0; d < 4; d++) {
+            int newRow = row + dr[d];
+            int newCol = col + dc[d];
+            
+            if (newRow < 0 || newRow >= rows || newCol < 0 || newCol >= cols) continue;
+            
+            int newLoc = newRow * cols + newCol;
+            
+            if (!visited[newLoc] && map[newLoc] == 0 && cellToCluster[newLoc] == clusterID) {
+                visited[newLoc] = true;
+                q.push({newLoc, dist + 1});
+            }
+        }
+    }
+    
+    return distances;
 }
 
-int ClusterHeuristics::manhattanDistance(int loc1, int loc2) const {
-    int r1 = getRow(loc1);
-    int c1 = getCol(loc1);
-    int r2 = getRow(loc2);
-    int c2 = getCol(loc2);
-    return std::abs(r1 - r2) + std::abs(c1 - c2);
+int ClusterHeuristics::findClusterPath(int startCluster, int goalCluster, 
+                                        const std::unordered_map<int, int>& startExitDistances,
+                                        const std::unordered_map<int, int>& goalEntryDistances) const {
+    if (!pipeline_) return -1;
+    
+    const auto& clusters = pipeline_->getClusters();
+    
+    // Dijkstra's algorithm on cluster graph
+    std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> pq; // (distance, cluster)
+    std::unordered_map<int, int> distances;
+    
+    // Initialize distances
+    for (const auto& c : clusters) {
+        distances[c.id] = std::numeric_limits<int>::max();
+    }
+    
+    // Start from each exit point in start cluster
+    for (const auto& [exitPoint, distToExit] : startExitDistances) {
+        // Find which neighbor this exit point connects to
+        const Cluster* startClusterObj = nullptr;
+        for (const auto& c : clusters) {
+            if (c.id == startCluster) {
+                startClusterObj = &c;
+                break;
+            }
+        }
+        if (!startClusterObj) continue;
+        
+        for (int neighborID : startClusterObj->neighbors) {
+            int cA = std::min(startCluster, neighborID);
+            int cB = std::max(startCluster, neighborID);
+            auto it = clusterDistances_.find({cA, cB});
+            if (it == clusterDistances_.end()) continue;
+            
+            const auto& cpd = it->second;
+            int pointInStartCluster = (cpd.clusterA == startCluster) ? cpd.entryCell : cpd.exitCell;
+            
+            if (pointInStartCluster == exitPoint) {
+                // This exit point connects to this neighbor
+                int newDist = distToExit + cpd.distance;
+                if (newDist < distances[neighborID]) {
+                    distances[neighborID] = newDist;
+                    pq.push({newDist, neighborID});
+                }
+            }
+        }
+    }
+    
+    int minTotalDistance = std::numeric_limits<int>::max();
+    
+    while (!pq.empty()) {
+        auto [currentDist, current] = pq.top();
+        pq.pop();
+        
+        // Skip if we've already found a better path
+        if (currentDist > distances[current]) continue;
+        
+        // Find current cluster
+        const Cluster* currentCluster = nullptr;
+        for (const auto& c : clusters) {
+            if (c.id == current) {
+                currentCluster = &c;
+                break;
+            }
+        }
+        
+        if (!currentCluster) continue;
+        
+        // Explore neighbors
+        for (int neighbor : currentCluster->neighbors) {
+            int cA = std::min(current, neighbor);
+            int cB = std::max(current, neighbor);
+            auto it = clusterDistances_.find({cA, cB});
+            
+            if (it == clusterDistances_.end()) continue;
+            
+            const auto& cpd = it->second;
+            int edgeWeight = cpd.distance;
+            int newDist = distances[current] + edgeWeight;
+            
+            // Check if this neighbor is the goal cluster
+            if (neighbor == goalCluster) {
+                // We're crossing into the goal cluster
+                // Find which entry point this connection uses
+                int entryPointInGoal = (cpd.clusterA == goalCluster) ? cpd.entryCell : cpd.exitCell;
+                
+                // Check if we have distance from this entry point to goal
+                auto goalIt = goalEntryDistances.find(entryPointInGoal);
+                if (goalIt != goalEntryDistances.end()) {
+                    int totalDist = newDist + goalIt->second;
+                    minTotalDistance = std::min(minTotalDistance, totalDist);
+                }
+            } else {
+                // Regular neighbor exploration
+                if (newDist < distances[neighbor]) {
+                    distances[neighbor] = newDist;
+                    pq.push({newDist, neighbor});
+                }
+            }
+        }
+    }
+    
+    return (minTotalDistance == std::numeric_limits<int>::max()) ? -1 : minTotalDistance;
+}
+
+void ClusterHeuristics::setAgentPlan(const AgentPlan& plan, int currentTimestep) {
+    if (!initialized_ || !env_ || plan.agentID < 0) return;
+    
+    // Remove old reservations if this agent already has a plan
+    auto it = agentPlans_.find(plan.agentID);
+    if (it != agentPlans_.end()) {
+        // Remove from cluster congestion
+        for (auto& [clusterID, congestion] : clusterCongestion_) {
+            congestion.removeAgentReservations(plan.agentID);
+        }
+        // Remove from edge congestion
+        for (auto& [edge, congestion] : edgeCongestion_) {
+            congestion.removeAgentReservations(plan.agentID);
+        }
+    }
+    
+    // Store the new plan
+    agentPlans_[plan.agentID] = plan;
+    
+    // Convert plan to time interval reservations
+    convertPlanToReservations(plan, currentTimestep);
+}
+
+void ClusterHeuristics::convertPlanToReservations(const AgentPlan& plan, int currentTimestep) {
+    if (plan.isEmpty()) return;
+    
+    // Assume unit speed (1 cell per timestep) for now
+    // TODO: Get actual agent speed from SharedEnvironment if available
+    const int speed = 1;
+    
+    int currentTime = currentTimestep;
+    
+    for (size_t i = 0; i < plan.path.size(); ++i) {
+        const auto& step = plan.path[i];
+        
+        if (step.distanceEstimate <= 0) continue;
+        
+        // Calculate time interval for this cluster
+        int duration = step.distanceEstimate / speed;
+        if (duration == 0) duration = 1; // Minimum 1 timestep
+        
+        int startTime = currentTime;
+        int endTime = currentTime + duration - 1;
+        
+        // Add reservation to cluster congestion
+        auto& clusterCong = clusterCongestion_[step.clusterID];
+        if (clusterCong.clusterID == -1) {
+            clusterCong.clusterID = step.clusterID;
+            // TODO: Initialize capacityScore if needed
+        }
+        clusterCong.addReservation(plan.agentID, startTime, endTime);
+        
+        // Add reservation to edge congestion if not the first step
+        if (i > 0) {
+            const auto& prevStep = plan.path[i - 1];
+            int clusterA = std::min(prevStep.clusterID, step.clusterID);
+            int clusterB = std::max(prevStep.clusterID, step.clusterID);
+            
+            auto edgeKey = std::make_pair(clusterA, clusterB);
+            auto& edgeCong = edgeCongestion_[edgeKey];
+            if (edgeCong.clusterA == -1) {
+                edgeCong.clusterA = clusterA;
+                edgeCong.clusterB = clusterB;
+            }
+            
+            // Edge reservation spans the transition between clusters
+            edgeCong.addReservation(plan.agentID, startTime, startTime);
+        }
+        
+        // Advance time for next cluster
+        currentTime = endTime + 1;
+    }
+}
+
+float ClusterHeuristics::getClusterCongestionRatio(int clusterID, int timestep) const {
+    auto it = clusterCongestion_.find(clusterID);
+    if (it == clusterCongestion_.end()) return 0.0f;
+    return it->second.getCongestionRatioAt(timestep);
+}
+
+int ClusterHeuristics::getClusterOccupancy(int clusterID, int timestep) const {
+    auto it = clusterCongestion_.find(clusterID);
+    if (it == clusterCongestion_.end()) return 0;
+    return it->second.getOccupancyAt(timestep);
+}
+
+int ClusterHeuristics::getEdgeUsage(int clusterA, int clusterB, int timestep) const {
+    int minCluster = std::min(clusterA, clusterB);
+    int maxCluster = std::max(clusterA, clusterB);
+    
+    auto it = edgeCongestion_.find({minCluster, maxCluster});
+    if (it == edgeCongestion_.end()) return 0;
+    return it->second.getUsageAt(timestep);
+}
+
+float ClusterHeuristics::getClusterCapacity(int clusterID) const {
+    auto it = clusterCongestion_.find(clusterID);
+    if (it == clusterCongestion_.end()) return 0.0f;
+    return it->second.capacityScore;
+}
+
+bool ClusterHeuristics::hasAgentPlan(int agentID) const {
+    return agentPlans_.find(agentID) != agentPlans_.end();
+}
+
+const AgentPlan* ClusterHeuristics::getAgentPlan(int agentID) const {
+    auto it = agentPlans_.find(agentID);
+    if (it == agentPlans_.end()) return nullptr;
+    return &(it->second);
+}
+
+void ClusterHeuristics::removeAgentPlan(int agentID) {
+    // Remove from agent plans
+    agentPlans_.erase(agentID);
+    
+    // Remove all reservations
+    for (auto& [clusterID, congestion] : clusterCongestion_) {
+        congestion.removeAgentReservations(agentID);
+    }
+    for (auto& [edge, congestion] : edgeCongestion_) {
+        congestion.removeAgentReservations(agentID);
+    }
+}
+
+void ClusterHeuristics::pruneExpiredReservations(int currentTimestep) {
+    // Prune cluster reservations
+    for (auto& [clusterID, congestion] : clusterCongestion_) {
+        congestion.pruneExpiredReservations(currentTimestep);
+    }
+    
+    // Prune edge reservations
+    for (auto& [edge, congestion] : edgeCongestion_) {
+        congestion.pruneExpiredReservations(currentTimestep);
+    }
 }
 
 } // namespace clustering
