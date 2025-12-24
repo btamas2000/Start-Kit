@@ -175,6 +175,46 @@ ClusteringPipeline::findLocalMaximas(int threshold) {
     return localMaximaPlateaus;
 }
 
+std::vector<std::pair<int, std::vector<int>>> ClusteringPipeline::joinDiagonalMaxima(
+    const std::vector<std::pair<int, std::vector<int>>>& plateaus) {
+    
+    std::vector<std::pair<int, std::vector<int>>> joinedPlateaus;
+    
+    const int allDR[8] = {-1, -1, 0, 1, 1, 1, 0, -1};
+    const int allDC[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+    std::vector<int> maximaMap(rows_ * cols_, -1);
+    for (int i = 0; i < plateaus.size(); i++) {
+        for (int loc : plateaus[i].second) {
+            maximaMap[loc] = i;
+        }
+    }
+    
+    for (const auto& plateau : plateaus) {
+        int maxima = plateau.first;
+        std::vector<int> currentPlateauCells;
+        std::unordered_set<int> visited;
+        std::queue<int> q;
+        for (int loc : plateau.second) {
+            currentPlateauCells.push_back(loc);
+            q.push(loc);
+            visited.insert(loc);
+        }
+        while (!q.empty()) {
+            int curr = q.front();
+            q.pop();
+
+            int r = getRow(curr);
+            int c = getCol(curr);
+            for (int d = 0; d < 8; d++) {
+                
+            }
+        }
+    }
+    
+    return joinedPlateaus;
+}
+
 std::vector<Cluster> ClusteringPipeline::formInitialClusters(
     const std::vector<std::pair<int, std::vector<int>>>& localMaxima,
     float dropFraction) {
@@ -442,20 +482,23 @@ void ClusteringPipeline::runClustering(int threshold, float dropFraction, int mi
     
     // Step 2: Find local maxima
     auto plateaus = findLocalMaximas(threshold);
+
+    // Step 3: Join diagonally connected maxima cells in single plateaus
+    plateaus = joinDiagonalMaxima(plateaus);
     
-    // Step 3: Form initial clusters
+    // Step 4: Form initial clusters
     auto initialClusters = formInitialClusters(plateaus, dropFraction);
     
-    // Step 4: Cluster DT=1 cells
+    // Step 5: Cluster DT=1 cells
     auto clustersWithDT1 = clusterDT1Cells(initialClusters, minCorridorSize);
     
-    // Step 5: Assign leftover cells
+    // Step 6: Assign leftover cells
     clusters_ = assignLeftoverCells(clustersWithDT1);
     
-    // Step 6: Update cluster neighbors
+    // Step 7: Update cluster neighbors
     clusters_ = updateClusterNeighbors(clusters_);
     
-    // Step 7: Build cell-to-cluster lookup map
+    // Step 8: Build cell-to-cluster lookup map
     buildCellToClusterMap();
 }
 
