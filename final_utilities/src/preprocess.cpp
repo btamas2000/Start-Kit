@@ -1,5 +1,7 @@
 #include "preprocess.h"
 #include <math.h>
+#include <algorithm>
+#include <iostream>
 
 namespace PreprocessingPipeline {
     void PreprocessPipeline::identifyDistinctAreas() {
@@ -52,7 +54,7 @@ namespace PreprocessingPipeline {
             }
         }
 
-        areaMap_ = areas;
+        areaMap_ = std::move(areas);
     }
 
     void PreprocessPipeline::computeDistanceTransform() {
@@ -118,15 +120,15 @@ namespace PreprocessingPipeline {
         }
 
 
-        distanceTransform_ = distances;
+        distanceTransform_ = std::move(distances);
     }
 
     // Helper
-    std::pair<int, int> ClusteringPipeline::findGlobalMinMax() const {
+    std::pair<int, int> PreprocessPipeline::findGlobalMinMax() {
         int minVal = -1;
         int maxVal = -1;
         
-        for (int dist : distances_) {
+        for (int dist : distanceTransform_) {
             if (minVal == -1 || dist < minVal) minVal = dist;
             if (maxVal == -1 || dist > maxVal) maxVal = dist;
         }
@@ -135,11 +137,11 @@ namespace PreprocessingPipeline {
     }
 
     // Helper
-    std::vector<int> ClusteringPipeline::selectCellsAtDistance(int targetDistance) const {
+    std::vector<int> PreprocessPipeline::selectCellsAtDistance(int targetDistance) {
         std::vector<int> cells;
         
-        for (int loc = 0; loc < static_cast<int>(distances_.size()); loc++) {
-            if (distances_[loc] == targetDistance) {
+        for (int loc = 0; loc < static_cast<int>(distanceTransform_.size()); loc++) {
+            if (distanceTransform_[loc] == targetDistance) {
                 cells.push_back(loc);
             }
         }
@@ -147,7 +149,7 @@ namespace PreprocessingPipeline {
         return cells;
     }
 
-    void ClusteringPipeline::findLocalMaximas() {
+    void PreprocessPipeline::findLocalMaximas() {
         auto [minVal, maxVal] = findGlobalMinMax();
         std::vector<std::pair<int, std::vector<int>>> localMaximaPlateaus;
         std::unordered_set<int> plateauCells;
@@ -188,13 +190,13 @@ namespace PreprocessingPipeline {
                         if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                             int next = getLoc(nr, nc);
                             
-                            if (distances_[next] > distances_[curr]) {
+                            if (distanceTransform_[next] > distanceTransform_[curr]) {
                                 falsePlateau = true;
                                 break;
                             } else if (falsePlateaus.find(next) != falsePlateaus.end()) {
                                 falsePlateau = true;
                                 break;
-                            } else if (distances_[next] == distances_[curr]) {
+                            } else if (distanceTransform_[next] == distanceTransform_[curr]) {
                                 if (plateauSet.find(next) == plateauSet.end()) {
                                     potentialMaximumPlateau.push_back(next);
                                     plateauSet.insert(next);
@@ -218,10 +220,10 @@ namespace PreprocessingPipeline {
             }
         }
 
-        localMaximaPlateaus_ = localMaximaPlateaus;
+        localMaximaPlateaus_ = std::move(localMaximaPlateaus);
     }
 
-    void ClusteringPipeline::mergeLocalMaximas() {
+    void PreprocessPipeline::mergeLocalMaximas() {
         // Implementation for merging local maximas that are diagonally connected
         // Merge if diagonal local maximas have same distance value
 
@@ -268,7 +270,7 @@ namespace PreprocessingPipeline {
                     if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                         int next = getLoc(nr, nc);
 
-                        if (potential_merge.find(next) == potential_merge.end() && visited.find(next) == visited.end() && distances_[next] == maxima_value) {
+                        if (potential_merge.find(next) == potential_merge.end() && visited.find(next) == visited.end() && distanceTransform_[next] == maxima_value) {
                             potential_merge.insert(next);
                             visited.insert(next);
                             q.push(next);
@@ -283,11 +285,15 @@ namespace PreprocessingPipeline {
             }
         }
 
-        return merged_plateaus;
+        localMaximaPlateaus_.clear();
+        localMaximaPlateaus_ = std::move(merged_plateaus);
     }
 
     void PreprocessPipeline::formInitialClusters() {
         // Implementation for forming initial clusters from local maxima plateaus
+
+        clusters_.clear();
+        clusterCells_.clear();
 
         std::vector<int> clusterMap(rows_ * cols_, -1);
     
@@ -324,10 +330,10 @@ namespace PreprocessingPipeline {
                 if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                     int next = getLoc(nr, nc);
                     
-                    if (distances_[next] <= distances_[curr] && distances_[next] > 0) {
+                    if (distanceTransform_[next] <= distanceTransform_[curr] && distanceTransform_[next] > 0) {
                         if (clusterMap[next] == -1) {
                             clusterMap[next] = clusterMap[curr];
-                            if (distances_[next] > 1) {
+                            if (distanceTransform_[next] > 1) {
                                 q.push({next, maxima});
                             }
                         }
@@ -342,20 +348,22 @@ namespace PreprocessingPipeline {
             Cluster cluster;
             cluster.id = i;
             cluster.area_id = areaMap_[localMaximaPlateaus_[i].second[0]];
-            cluster.degree = 0;
+            cluster.size = 0;
             cluster.maxima = localMaximaPlateaus_[i].first;
-            
-            for (int loc = 0; loc < static_cast<int>(clusterMap.size()); loc++) {
-                if (clusterMap[loc] == static_cast<int>(i)) {
-                    cluster.cells.push_back(loc);
-                }
-            }
-            
-            cluster.size = cluster.cells.size();
+            // set cells and size when finalized
+            // set rest to whatever
+            cluster.cells_begin = -1;
+            cluster.cells_end = -1;
+            cluster.neighbor_begin = -1;
+            cluster.neighbor_end = -1;
+            cluster.portal_begin = -1;
+            cluster.portal_end = -1;
+
             clusters.push_back(cluster);
         }
 
-        clusters_ = clusters;
+        clusterMap_ = std::move(clusterMap);
+        clusters_ = std::move(clusters);
     }
 
     void PreprocessPipeline::clusterDT1Cells(int minSize) {
@@ -363,11 +371,12 @@ namespace PreprocessingPipeline {
 
         std::vector<Cluster> updatedClusters = clusters_;
         int clusterId = updatedClusters.size();
+        std::vector<int> clusterMap = clusterMap_;
 
         std::unordered_set<int> clustered_cells;
 
-        for (const auto& cluster : updatedClusters) {
-            for (int loc : cluster.cells) {
+        for (const int loc : clusterMap) {
+            if (loc != -1) {
                 clustered_cells.insert(loc);
             }
         }
@@ -377,7 +386,7 @@ namespace PreprocessingPipeline {
         for (int r = 0; r < rows_; r++) {
             for (int c = 0; c < cols_; c++) {
                 int loc = getLoc(r, c);
-                if (distances_[loc] == 1 && clustered_cells.find(loc) == clustered_cells.end()) {
+                if (distanceTransform_[loc] == 1 && clustered_cells.find(loc) == clustered_cells.end()) {
                     leftover_dt1_cells.insert(loc);
                 }
             }
@@ -405,7 +414,7 @@ namespace PreprocessingPipeline {
                 int nc = c + dc[i];
 
                 int next = getLoc(nr, nc);
-                if (clustered_cells.find(next) != clustered_cells.end()) {
+                if (leftover_dt1_cells.find(next) != leftover_dt1_cells.end()) {
                     neighbor_count++;
                 }
             }
@@ -461,30 +470,48 @@ namespace PreprocessingPipeline {
                 Cluster cluster;
                 cluster.id = clusterId;
                 cluster.area_id = areaMap_[current_cells[0]];
-                cluster.degree = 0;
+                cluster.size = 0;
                 cluster.maxima = 1;
-                cluster.cells = current_cells;
-                cluster.size = current_cells.size();
+                cluster.cells_begin = -1;
+                cluster.cells_end = -1;
+                cluster.neighbor_begin = -1;
+                cluster.neighbor_end = -1;
+                cluster.portal_begin = -1;
+                cluster.portal_end = -1;
+
+                for (int cell : current_cells) {
+                    clusterMap[cell] = clusterId;
+                }
 
                 updatedClusters.push_back(cluster);
                 clusterId++;
             }
         }
 
-        clusters_ = updatedClusters;
+        clusterMap_.clear();
+        clusterMap_ = std::move(clusterMap);
+        clusters_.clear();
+        clusters_ = std::move(updatedClusters);
     }
 
     void PreprocessPipeline::assignLeftoverCells() {
         // Implementation for greedy assignment of leftover cells to nearest clusters
 
         std::vector<Cluster> updatedClusters = clusters_;
+        clusters_.clear();
+
+        std::vector<int> clusterMap = clusterMap_;
+        clusterMap_.clear();
+
+        std::vector<int> clusterCells;
+        clusterCells_.clear();
 
         // Sort clusters by maxima ascending
-        std::sort(updatedClusters.begin(), updatedClusters.end(), [](const Cluster& a, const Cluster& b) {
+        std::vector<Cluster> sortedClusters = updatedClusters;
+
+        std::sort(sortedClusters.begin(), sortedClusters.end(), [](const Cluster& a, const Cluster& b) {
             return a.maxima < b.maxima;
         });
-
-        std::vector<int> assignmentMap(rows_ * cols_, -1);
 
         struct QueueItem {
             int loc;
@@ -493,10 +520,9 @@ namespace PreprocessingPipeline {
 
         std::queue<QueueItem> q;
 
-        for (auto* cluster : sortedClusters) {
-            for (int loc : cluster->cells) {
-                assignmentMap[loc] = cluster->id;
-                q.push({loc, cluster->id});
+        for (int i = 0; i < clusterMap.size(); i++) {
+            if (clusterMap[i] != -1) {
+                q.push({i, clusterMap[i]});
             }
         }
 
@@ -516,35 +542,43 @@ namespace PreprocessingPipeline {
 
                 if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                     int next = getLoc(nr, nc);
-                    if (assignmentMap[next] == -1 && distances_[next] > 0) {
-                        assignmentMap[next] = clusterId;
+                    if (clusterMap[next] == -1 && distanceTransform_[next] > 0) {
+                        clusterMap[next] = clusterId;
                         q.push({next, clusterId});
                     }
                 }
             }
         }
 
-        for (auto& cluster : updatedClusters) {
+        int c = 0;
+
+        for (Cluster& cluster : updatedClusters) {
             std::vector<int> cluster_cells;
             for (int r = 0; r < rows_; r++) {
                 for (int c = 0; c < cols_; c++) {
                     int loc = getLoc(r, c);
-                    if (assignmentMap[loc] == cluster.id) {
+                    if (clusterMap[loc] == cluster.id) {
                         cluster_cells.push_back(loc);
                     }
                 }
             }
-            cluster.cells = cluster_cells;
-            cluster.size = cluster.cells.size();
+
+            int size = 0;
+            
+            for (int cell : cluster_cells) {
+                clusterCells.emplace_back(cell);
+                size++;
+            }
+
+            cluster.size = size;
+            cluster.cells_begin = c;
+            cluster.cells_end = c + size - 1;
+            c += size;
         }
         
-        clusters_ = updatedClusters;
-
-        for (const auto& cluster : updatedClusters) {
-            for (int loc : cluster.cells) {
-                clusterMap_[loc] = cluster.id;
-            }
-        }
+        clusterMap_ = std::move(clusterMap);
+        clusters_ = std::move(updatedClusters);
+        clusterCells_ = std::move(clusterCells);
     }
 
     // Helper
@@ -576,75 +610,121 @@ namespace PreprocessingPipeline {
     //     return chunks;
     // }
 
-    void PreprocessPipeline::updateTopology() {
-        // Implementation for updating cluster neighbor information
+
+    void PreprocessPipeline::updateNeighbors() {
+        // Implementation for identifying neighbors of each cluster
 
         std::vector<Cluster> updatedClusters = clusters_;
+        clusters_.clear();
 
-        std::vector<int> clusterMap(rows_ * cols_, -1);
-        for (const auto& cluster : updatedClusters) {
-            for (int loc : cluster.cells) {
-                clusterMap[loc] = cluster.id;
-            }
-        }
+        std::vector<int> clusterNeighbors;
+        clusterNeighbors_.clear();
 
         const int dr[] = {-1, 1, 0, 0};
         const int dc[] = {0, 0, -1, 1};
 
-        struct PortalItem {
-            int n_id;
-            int from;
-            int to;
-        };
+        int c = 0;
 
-        int portal_id = 0;
-
-        for (auto& cluster : updatedClusters) {
+        for (Cluster& cluster : updatedClusters) {
             std::unordered_set<int> neighborSet;
-            std::unordered_set<PortalItem> portalSet;
 
-            for (int loc : cluster.cells) {
+            for (int i = cluster.cells_begin; i <= cluster.cells_end; i++) {
+                int loc = clusterCells_[i];
                 int r = getRow(loc);
                 int c = getCol(loc);
 
-                for (int i = 0; i < 4; i++) {
-                    int nr = r + dr[i];
-                    int nc = c + dc[i];
+                for (int j = 0; j < 4; j++) {
+                    int nr = r + dr[j];
+                    int nc = c + dc[j];
 
                     if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                         int next = getLoc(nr, nc);
-                        int neighborId = clusterMap[next];
+                        int neighborId = clusterMap_[next];
                         if (neighborId != -1 && neighborId != cluster.id) {
                             neighborSet.insert(neighborId);
-                            portalSet.insert({neighborId, loc, next});
                         }
                     }
                 }
             }
 
-            cluster.neighbors.clear();
             for (int neighborId : neighborSet) {
-                cluster.neighbors.push_back(neighborId);
+                clusterNeighbors.emplace_back(neighborId);
             }
-            cluster.degree = cluster.neighbors.size();
+
+            cluster.neighbor_begin = c;
+            cluster.neighbor_end = c + neighborSet.size() - 1;
+            cluster.size = neighborSet.size();
+            c += neighborSet.size();
+        }
+
+        clusters_ = std::move(updatedClusters);
+        clusterNeighbors_ = std::move(clusterNeighbors);
+    }
+
+
+    void PreprocessPipeline::updatePortals() {
+        // Implementation for identifying portal connections between clusters
+
+        // Notes to myself:
+        // If A and B are connected and both have only one portal to each other, then those two portals are opposites
+        // if A has multiple portals to B, and B has multiple portals to A, then since by geometry of grid maps, cells cannot overlap, just check one cell from each portal to see which portal it connects to
+        // Portals are bidirectional and also in pairs
+        // A portal is critical if the minimum cell count on either side is 1
+        // A portal has shared area if there exists at least one cell in the same cluster that is also part of another portal
+
+        std::vector<Portal> portals;
+        portals_.clear();
+
+        portalMap_.clear();
+        std::vector<int> portalMap(rows_ * cols_, -1);
+
+        std::vector<int> portalCells;
+        portalCells_.clear();
+
+        std::vector<int> sharedAreaPortals;
+        sharedAreaPortals_.clear();
+
+        std::vector<Cluster> updatedClusters = clusters_;
+        clusters_.clear();
+
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
+
+        int c = 0;
+        int s = 0;
+
+        for (Cluster& cluster : updatedClusters) {
+            std::unordered_map<int, std::vector<int>> neighborPortals;
+
+            for (int i = cluster.cells_begin; i <= cluster.cells_end; i++) {
+                int loc = clusterCells_[i];
+                int r = getRow(loc);
+                int c = getCol(loc);
+
+                for (int j = 0; j < 4; j++) {
+                    int nr = r + dr[j];
+                    int nc = c + dc[j];
+
+                    if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
+                        int next = getLoc(nr, nc);
+                        int neighborId = clusterMap_[next];
+                        if (neighborId != -1 && neighborId != cluster.id) {
+                            neighborPortals[neighborId].push_back(loc);
+                        }
+                    }
+                }
+            }
+
+            std::vector<std::pair<int, std::vector<int>>> portal_groups; // group together neighboring portal cells (as multiple portals can lead to the same neighbor)
 
             const int portal_dr[] = {-1, 1, 0, 0, -1, 1, -1, 1};
             const int portal_dc[] = {0, 0, -1, 1, -1, -1, 1, 1};
 
-            std::vector<std::pair<int, std::vector<int>>> connected_portal_groups;
-
-            // Group portals that are connected
-            std::unordered_map<int, std::unordered_set<int>> portals_by_neighbor;
-
-            for (const auto& p : portalSet) {
-                portals_by_neighbor[p.n_id].insert(p.from);
-            }
-
-            for (auto& [n_id, from_cells] : portals_by_neighbor) {
-    
+            for (const auto& [n_id, cells] : neighborPortals) {
                 std::unordered_set<int> visited;
+                std::unordered_set<int> valid_candidates(cells.begin(), cells.end());
 
-                for (int start_cell : from_cells) {
+                for (int start_cell : cells) {
                     if (visited.count(start_cell)) continue; // Already grouped
 
                     std::vector<int> group_cells;
@@ -660,12 +740,12 @@ namespace PreprocessingPipeline {
                         group_cells.push_back(curr);
 
                         for (int i = 0; i < 8; ++i) {
-                            int nr = portal_dr[i];
-                            int nc = portal_dc[i];
+                            int nr = getRow(curr) + portal_dr[i];
+                            int nc = getCol(curr) + portal_dc[i];
                           
                             if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                                 int neighbor_loc = getLoc(nr, nc);
-                                if (from_cells.count(neighbor_loc) && !visited.count(neighbor_loc)) {
+                                if (!visited.count(neighbor_loc) && valid_candidates.count(neighbor_loc)) {
                                     visited.insert(neighbor_loc);
                                     q.push(neighbor_loc);
                                 }
@@ -673,395 +753,659 @@ namespace PreprocessingPipeline {
                         }
                     }
 
-                    connected_portal_groups.push_back({n_id, std::move(group_cells)});
+                    portal_groups.push_back({n_id, group_cells});
                 }
             }
 
-            Portal portal;
-            for (const auto& [n_id, cells] : connected_portal_groups) {
-                portal.id = portal_id;
-                portal.from_cluster_id = cluster.id;
-                portal.to_cluster_id = n_id;
-                portal.cells = cells;
-                portal.is_critical = false; // Placeholder, set based on criteria
-                portal.opposite_portal_id = -1; // Placeholder, set when both directions are known
+            int c_0 = c;
 
-                cluster.portals.push_back(&portal);
-                portals_.push_back(&portal);
-                portal_id++;
+            for (const auto& [n_id, cells] : portal_groups) {
+                Portal portal;
+                portal.id = c;
+                portal.from = cluster.id;
+                portal.to = n_id;
+                portal.size = cells.size();
+                portal.is_critical_this_side = (cluster.size == 1);
+                portal.is_critical_other_side = -1;
+                portal.opposite_portal_id = -1;
+                portal.shared_begin = -1;
+                portal.shared_end = -1;
+                portal.has_shared_area = false;
+                portal.distances_index = -1;
+                portal.intra_h_begin = -1;
+                portal.intra_h_end = -1;
+                portal.inter_h_begin = -1;
+                portal.inter_h_end = -1;
+
+                for (int cell : cells) {
+                    portalMap[cell] = portal.id;
+                    portalCells.emplace_back(cell);
+                }
+                portal.cells_begin = s;
+                portal.cells_end = s + cells.size() - 1;
+                s += cells.size();
+
+                portals.push_back(portal);
+                c++;
+            }
+
+            // account for no portals case
+            if (c_0 == c) {
+                cluster.portal_begin = -1;
+                cluster.portal_end = -1;
+            } else {
+                cluster.portal_begin = c_0;
+                cluster.portal_end = c - 1;
             }
         }
 
-        clusters_ = updatedClusters;
-    }
+        c = 0;
 
-    void PreprocessPipeline::updatePortals() {
-        // Implementation for identifying portal connections between clusters
+        for (Portal& portal : portals) {
+            // Check for shared area
+            bool shared = false;
+            std::unordered_set<int> shared_portals;
 
-        // Notes to myself:
-        // If A and B are connected and both have only one portal to each other, then those two portals are opposites
-        // if A has multiple portals to B, and B has multiple portals to A, then since by geometry of grid maps, cells cannot overlap, just check one cell from each portal to see which portal it connects to
-        // Portals are bidirectional and also in pairs
-        // A portal is critical if the minimum cell count on either side is 1
+            int cluster_id = clusterMap_[portalCells[portal.cells_begin]];
 
-        for (auto& portal : portals_) {
-            if (portal->opposite_portal_id != -1) continue; // Already assigned
+            int p_begin = updatedClusters[cluster_id].portal_begin;
+            int p_end = updatedClusters[cluster_id].portal_end;
 
-            Cluster neighbor = clusters_[portal->to];
+            for (int i = p_begin; i <= p_end; i++) {
+                if (i == portal.id) continue;
+                Portal& other_portal = portals[i];
+                std::unordered_set<int> other_cells_set;
 
-            std::vector<Portal*> candidate_opposites;
-
-            for (auto* neighbor_portal : neighbor.portals) {
-                if (neighbor_portal->to == portal->from) {
-                    candidate_opposites.push_back(neighbor_portal);
+                for (int j = other_portal.cells_begin; j <= other_portal.cells_end; j++) {
+                    other_cells_set.insert(portalCells[j]);
                 }
-            }
 
-            if (candidate_opposites.size() == 1) {
-                portal->opposite_portal_id = candidate_opposites[0]->id;
-                candidate_opposites[0]->opposite_portal_id = portal->id;
-            } else {
-                // Need to check cells
-                for (auto* candidate : candidate_opposites) {
-                    int neighbor_neighbor_id = candidate->to;
-                    if (neighbor_neighbor_id == portal->from) {
-                        portal->opposite_portal_id = candidate->id;
-                        candidate->opposite_portal_id = portal->id;
+                for (int j = portal.cells_begin; j <= portal.cells_end; j++) {
+                    if (other_cells_set.find(portalCells[j]) != other_cells_set.end()) {
+                        shared = true;
+                        shared_portals.insert(other_portal.id);
                         break;
                     }
                 }
             }
 
-            // Check criticality
-            Portal* opposite_portal = portals_[portal->opposite_portal_id];
+            if (shared) {
+                portal.has_shared_area = true;
+                
+                for (int sp_id : shared_portals) {
+                    sharedAreaPortals.emplace_back(sp_id);
+                }
 
-            int from_size = portal->cells.size();
-            int to_size = opposite_portal->cells.size();
-
-            if (from_size == 1 || to_size == 1) {
-                portal->is_critical = true;
-                opposite_portal->is_critical = true;
+                portal.shared_begin = c;
+                portal.shared_end = c + shared_portals.size() - 1;
+                c += shared_portals.size();
             }
         }
 
-        // 2 important edge cases to consider:
-        // 1. when there is a portal from A to B and also from A to C and both portals are critical and share the same cell in A
-        // 2. when there is a portal from A to B, from A to C and from A to D and all three portals are critical and share the same cell in A
-        // In both cases, all portals involved should be marked as affected by each other
-        // So if one portal is disabled temporarily, the others are also considered disabled
+        for (Portal& portal : portals) {
+            // Assign opposite portals
+            if (portal.opposite_portal_id != -1) continue; // Already assigned
 
-        // TODO: implement the above logic
+            for (int i = updatedClusters[portal.to].portal_begin; i <= updatedClusters[portal.to].portal_end; i++) {
+                // check if this portal leads back to the original cluster
+                // also check if at least one cell is adjecent to the original portal
+                // as there can be multiple portals between two clusters and we need to find the correct opposite
+                Portal& neighbor_portal = portals[i];
+
+                if (neighbor_portal.to == portal.from) {
+                    // check adjacency
+
+                    bool adjacent = false;
+
+                    std::unordered_set<int> neighbor_portal_cells;
+                    for (int j = neighbor_portal.cells_begin; j <= neighbor_portal.cells_end; j++) {
+                        neighbor_portal_cells.insert(portalCells[j]);
+                    }
+
+                    for (int j = portal.cells_begin; j <= portal.cells_end && !adjacent; j++) {
+                        int p_cell = portalCells[j];
+                        int r = getRow(p_cell);
+                        int c = getCol(p_cell);
+
+                        for (int d = 0; d < 4; d++) {
+                            int nr = r + dr[d];
+                            int nc = c + dc[d];
+
+                            if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
+                                int next = getLoc(nr, nc);
+                                
+                                if (neighbor_portal_cells.find(next) != neighbor_portal_cells.end()) {
+                                    adjacent = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (adjacent) {
+                        portal.opposite_portal_id = neighbor_portal.id;
+                        neighbor_portal.opposite_portal_id = portal.id;
+
+                        if (portal.is_critical_this_side) {
+                            neighbor_portal.is_critical_other_side = true;
+                        }
+
+                        if (neighbor_portal.is_critical_this_side) {
+                            portal.is_critical_other_side = true;
+                        }
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        portals_ = std::move(portals);
+        portalMap_ = std::move(portalMap);
+        portalCells_ = std::move(portalCells);
+        sharedAreaPortals_ = std::move(sharedAreaPortals);
+        clusters_ = std::move(updatedClusters);
+
+        // for (int i = 0; i < portals_.size(); i++) {
+        //     std::cout << "Portal " << i << ": from cluster " << portals_[i].from << " to cluster " << portals_[i].to << ", size " << portals_[i].size << ", opposite portal " << portals_[i].opposite_portal_id << std::endl;
+        // }
     }
 
     void PreprocessPipeline::computePortalDistances() {
         // Implementation for precomputing portal distances within clusters
 
-        // Every cell in the portal is 0 distance
-        // Every other cell in the cluster is assigned the minimum distance to any portal cell
+        // For each portal, compute distances to all cells in the same cluster
+        // Distance is 0 if cell is part of the portal
+        // Use BFS for distance computation
+        // For saving space, store distances of multiple portals in one slice of portalDistances_
+        // A slice of portalDistances_ is all cells of the map where each cell has distance from a specific portal but only for cells in the same cluster
+        // Size of portalDistances_ is rows_ * cols_ * global_max_portals_in_cluster
 
-        const int dr[] = {-1, 1, 0, 0};
-        const int dc[] = {0, 0, -1, 1};
+        portalDistances_.clear();
 
-        for (Portal* portal : portals_) {
-            int current_cluster_id = portal->from_cluster_id;
+        std::vector<Portal> updatedPortals = portals_;
+        portals_.clear();
+        
+        int max_portals_in_cluster = 0;
+        for (const Cluster& cluster : clusters_) {
+            int portal_count = cluster.portal_end - cluster.portal_begin + 1;
+            if (portal_count > max_portals_in_cluster) {
+                max_portals_in_cluster = portal_count;
+            }
+        }
 
-            std::vector<int> distances(clusters_[current_cluster_id].size, -1);
-            std::queue<int> q;
+        std::vector<int> portalDistances(rows_ * cols_ * max_portals_in_cluster, -1);
 
-            std::unordered_set<int> portal_cells_set(portal->cells.begin(), portal->cells.end());
+        for (int s = 0; s < max_portals_in_cluster; s++) {
+            // select portals in slice s
+            std::vector<int> portals_in_slice;
 
-            for (int i = 0; i < clusters_[current_cluster_id].size; i++) {
-                int loc = clusters_[current_cluster_id].cells[i];
-                if (portal_cells_set.find(loc) != portal_cells_set.end()) {
-                    distances[i] = 0;
-                    q.push(i);
+            for (const Cluster& cluster : clusters_) {
+                // account for no portals case
+                if (cluster.portal_begin == -1) continue;
+
+                int portal_count = cluster.portal_end - cluster.portal_begin + 1;
+                if (s < portal_count) {
+                    portals_in_slice.push_back(cluster.portal_begin + s);
                 }
             }
 
-            while (!q.empty()) {
-                int curr_idx = q.front();
-                q.pop();
+            // for each portal in this slice, compute distances in its cluster
+            for (int i : portals_in_slice) {
+                Portal& portal = updatedPortals[i];
+                int cluster_id = portal.from;
+                
+                std::queue<int> q;
 
-                int curr_loc = clusters_[current_cluster_id].cells[curr_idx];
-                int r = getRow(curr_loc);
-                int c = getCol(curr_loc);
+                for (int j = portal.cells_begin; j <= portal.cells_end; j++) {
+                    int cell = portalCells_[j];
+                    portalDistances[s * rows_ * cols_ + cell] = 0;
+                    q.push(cell);
+                }
 
-                for (int i = 0; i < 4; i++) {
-                    int nr = r + dr[i];
-                    int nc = c + dc[i];
+                const int dr[] = {-1, 1, 0, 0};
+                const int dc[] = {0, 0, -1, 1};
 
-                    if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
-                        int next_loc = getLoc(nr, nc);
-                        auto it = std::find(clusters_[current_cluster_id].cells.begin(), clusters_[current_cluster_id].cells.end(), next_loc);
-                        if (it != clusters_[current_cluster_id].cells.end()) {
-                            int next_idx = std::distance(clusters_[current_cluster_id].cells.begin(), it);
-                            if (distances[next_idx] == -1) {
-                                distances[next_idx] = distances[curr_idx] + 1;
-                                q.push(next_idx);
+                while (!q.empty()) {
+                    int curr = q.front();
+                    q.pop();
+
+                    int r = getRow(curr);
+                    int c = getCol(curr);
+
+                    for (int d = 0; d < 4; d++) {
+                        int nr = r + dr[d];
+                        int nc = c + dc[d];
+
+                        if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
+                            int next = getLoc(nr, nc);
+                            if (clusterMap_[next] == cluster_id && portalDistances[s * rows_ * cols_ + next] == -1) {
+                                portalDistances[s * rows_ * cols_ + next] = portalDistances[s * rows_ * cols_ + curr] + 1;
+                                q.push(next);
                             }
                         }
                     }
                 }
+
+                portal.distances_index = s;
             }
-
-            PortalDistances portalDistances;
-            portalDistances.p_id = portal->id;
-
-            for (int i = 0; i < clusters_[current_cluster_id].size; i++) {
-                if (distances[i] != -1) {
-                    portalDistances.distances.push_back({clusters_[current_cluster_id].cells[i], distances[i]});
-                }
-            }
-
-            portalDistances_.push_back(portalDistances);
         }
+
+        portals_ = std::move(updatedPortals);
+        portalDistances_ = std::move(portalDistances);
     }
 
     void PreprocessPipeline::computeIntraClusterShortestPaths() {
         // Implementation for precomputing intra-cluster shortest paths between portals
 
-        // For each portal, compute shortest paths to all other portals in the same cluster
+        // for each portal, compute shortest paths to all other portals in the same cluster
+        // using the same order for portal as in portals_, store in intraClusterHeuristics_
+        // for every cluster, for every portal in that cluster, store the timesteps it takes to reach every other portal in that cluster
+        // for space efficiency, only store the paths from a portal to other portals in the same cluster
+        // that will result in, for every cluster, a space of its number of portals * (number of portals - 1) portal heuristic entries
 
-        intraClusterHeuristics_.resize(portals_.size());
+        intraClusterHeuristics_.clear();
+        std::vector<int> intraClusterHeuristics;
 
-        for (const Portal* portal : portals_) {
-            int current_cluster_id = portal->from_cluster_id;
+        std::vector<Portal> updatedPortals = portals_;
+        portals_.clear();
 
-            for (const Portal* target_portal : clusters_[current_cluster_id].portals) {
-                if (portal->id == target_portal->id) continue;
+        const int orientations[] = {0, 90, 180, 270};
 
-                PortalHeuristic path;
-                path.portal_to = target_portal->id;
-                path.start_cell = portal->cells[portal->cells.size() / 2]; // Middle cell as representative
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
 
-                // Find end cell in target portal closest to start cell
-                // First step is not rotation aware, just straight line distance but movement will set the orientation and later steps will be rotation aware
+        // int c = 0;
 
-                const int orientations[] = {0, 90, 180, 270};
+        for (const Cluster& cluster : clusters_) {
+            // account for no portals case
+            if (cluster.portal_begin == -1) continue;
 
-                const int dr[] = {-1, 1, 0, 0};
-                const int dc[] = {0, 0, -1, 1};
+            int portal_count = cluster.portal_end - cluster.portal_begin + 1;
 
-                int search_orientation = -1;
+            // special case: only one portal in cluster -> no intra-cluster heuristics needed
+            if (portal_count == 1) continue;
 
-                int min_distance = 0;
-                int end_cell = -1;
+            // std::vector<int> cluster_portal_heuristics(portal_count * (portal_count - 1), -1);
 
-                std::unordered_map<int, int> cell_distances;
+            for (int i = cluster.portal_begin; i <= cluster.portal_end; i++) {
+                Portal& portal = updatedPortals[i];
 
-                for (int cell : portalDistances_[target_portal->id].distances) {
-                    cell_distances[cell.first] = cell.second;
+                portal.intra_h_begin = intraClusterHeuristics.size();
+
+                for (int j = cluster.portal_begin; j <= cluster.portal_end; j++) {
+                    if (i == j) continue;
+
+                    const Portal& target_portal = updatedPortals[j];
+
+                    int current_cell = portalCells_[(portal.cells_begin + portal.cells_end) / 2]; // Middle cell as representative
+
+                    int search_orientation = -1;
+
+                    int min_distance = 0;
+
+                    bool found = false;
+
+                    while(!found) {
+                        int min_d = -1;
+                        int min_total_d = -1;
+                        int next_cell = -1;
+
+                        for (int i = 0; i < 4; ++i) {
+                            int nr = getRow(current_cell) + dr[i];
+                            int nc = getCol(current_cell) + dc[i];
+
+                            if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
+                                int neighbor_loc = getLoc(nr, nc);
+                                if (clusterMap_[neighbor_loc] == cluster.id) {
+                                    int d = portalDistances_[target_portal.distances_index * rows_ * cols_ + neighbor_loc];
+                                    if (d == 0) {
+                                        found = true;
+                                        next_cell = neighbor_loc;
+                                        break;
+                                    }
+                                    if (min_d == -1 || d < min_d) {
+                                        min_d = d;
+                                        next_cell = neighbor_loc;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (search_orientation == -1) {
+                            min_distance += 1;
+                            if (next_cell == current_cell - rows_) {
+                                search_orientation = 0;
+                            } else if (next_cell == current_cell + rows_) {
+                                search_orientation = 180;
+                            } else if (next_cell == current_cell - 1) {
+                                search_orientation = 270;
+                            } else if (next_cell == current_cell + 1) {
+                                search_orientation = 90;
+                            }
+                        } else {
+                            // rotation aware movement cost
+                            // agent can rotate clockwise and counterclockwise too
+                            int desired_orientation;
+                            if (next_cell == current_cell - rows_) {
+                                desired_orientation = 0;
+                            } else if (next_cell == current_cell + rows_) {
+                                desired_orientation = 180;
+                            } else if (next_cell == current_cell - 1) {
+                                desired_orientation = 270;
+                            } else if (next_cell == current_cell + 1) {
+                                desired_orientation = 90;
+                            }
+
+                            int rotation_cost = std::min(abs(desired_orientation - search_orientation), 360 - abs(desired_orientation - search_orientation)) / 90;
+                            min_distance += (1 + rotation_cost);
+                            search_orientation = desired_orientation;
+                        }
+                        current_cell = next_cell;
+                    }
+
+                    intraClusterHeuristics.emplace_back(min_distance);
+
+                    // local vector index: (i - cluster.portal_begin) * (portal_count - 1) + (j - cluster.portal_begin - (j > i ? 1 : 0))
+                    // cluster_portal_heuristics[(i - cluster.portal_begin) * (portal_count - 1) + (j - cluster.portal_begin - (j > i ? 1 : 0))] = min_distance;
                 }
 
-                int current_cell = path.start_cell;
-                bool found = false;
+                portal.intra_h_end = intraClusterHeuristics.size() - 1;
+            }
+        }
 
-                while (!found) {
-                    int min_d = -1;
-                    int min_total_d = -1;
-                    int next_cell = -1;
+        for (Portal& portal : updatedPortals) {
+            std::cout << "Portal " << portal.id << " intra-cluster heuristic range: " << portal.intra_h_begin << " to " << portal.intra_h_end << std::endl;
+        }
 
-                    for (int i = 0; i < 4; ++i) {
-                        int nr = getRow(path.start_cell) + dr[i];
-                        int nc = getCol(path.start_cell) + dc[i];
+        portals_ = std::move(updatedPortals);
+        intraClusterHeuristics_ = std::move(intraClusterHeuristics);
+    }
+
+    void PreprocessPipeline::computeInterClusterHeuristics() {
+        // Implementation for precomputing inter-cluster heuristics between portals
+
+        const int INF = 2000000000;
+
+        interClusterHeuristics_.clear();
+
+        std::vector<Portal> updatedPortals = portals_;
+        portals_.clear();
+
+        std::vector<int> interClusterHeuristics(updatedPortals.size() * updatedPortals.size(), -1);
+
+        for (int i = 0; i < static_cast<int>(updatedPortals.size()); i++) {
+            int row_offset = i * updatedPortals.size();
+
+            std::vector<int> distances(updatedPortals.size(), INF);
+
+            distances[i] = 0;
+
+            std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<std::pair<int, int>>> pq;
+
+            pq.push({0, i});
+
+            while(!pq.empty()) {
+                int d = pq.top().first;
+                int curr_portal_id = pq.top().second;
+                pq.pop();
+
+                if (d > distances[curr_portal_id]) continue;
+
+                const Portal& curr_portal = updatedPortals[curr_portal_id];
+
+                int opposite_portal_id = curr_portal.opposite_portal_id;
+                int op_weight = 1;
+
+                if (distances[opposite_portal_id] > distances[curr_portal_id] + op_weight) {
+                    distances[opposite_portal_id] = distances[curr_portal_id] + op_weight;
+                    pq.push({distances[opposite_portal_id], opposite_portal_id});
+                }
+
+                const Cluster& c = clusters_[curr_portal.from];
+                int p_start = c.portal_begin;
+                int p_end = c.portal_end;
+                int portal_count = p_end - p_start + 1;
+
+                if (portal_count > 1 && curr_portal.intra_h_begin != -1) {
+                    int h_idx = curr_portal.intra_h_begin;
+
+                    for (int j = p_start; j <= p_end; j++) {
+                        if (j == curr_portal_id) continue;
+
+                        int weight = intraClusterHeuristics_[h_idx];
+                        h_idx++;
+
+                        if (weight != -1) {
+                            if (distances[j] > distances[curr_portal_id] + weight) {
+                                distances[j] = distances[curr_portal_id] + weight;
+                                pq.push({distances[j], j});
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (int j = 0; j < static_cast<int>(updatedPortals.size()); j++) {
+                if (distances[j] != INF) {
+                    interClusterHeuristics[row_offset + j] = distances[j];
+                } else {
+                    interClusterHeuristics[row_offset + j] = -1;
+                }
+            }
+
+        }
+
+        interClusterHeuristics_ = std::move(interClusterHeuristics);
+
+        std::cout << "Inter-cluster heuristics size: " << interClusterHeuristics_.size() << std::endl;
+
+        for (Portal& portal : updatedPortals) {
+            portal.inter_h_begin = portal.id * updatedPortals.size();
+            portal.inter_h_end = portal.inter_h_begin + updatedPortals.size() - 1;
+        }
+
+        portals_ = std::move(updatedPortals);
+    }
+
+    void PreprocessPipeline::computeProjectionBase() {
+        // Implementation for computing projection base for clusters
+
+        projectionBase_.clear();
+        std::vector<int> projectionBase(clusters_.size(), -1);
+
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
+
+        for (int r = 0; r < rows_; r++) {
+            for (int c = 0; c < cols_; c++) {
+                if (map_[getLoc(r, c)] == 0) {
+                    int loc = getLoc(r, c);
+                    projectionBase[loc] = 0;
+
+                    int neighbor_cells = 0;
+
+                    for (int i = 0; i < 4; i++) {
+                        int nr = r + dr[i];
+                        int nc = c + dc[i];
 
                         if (nr >= 0 && nr < rows_ && nc >= 0 && nc < cols_) {
                             int neighbor_loc = getLoc(nr, nc);
-                            if (clusterMap_[neighbor_loc] == current_cluster_id) {
-                                int d = cell_distances[neighbor_loc];
-                                if (d == 0) {
-                                    found = true;
-                                    next_cell = neighbor_loc;
-                                    end_cell = neighbor_loc;
-                                    break;
-                                }
-                                if (min_d == -1 || d < min_d) {
-                                    min_d = d;
-                                    next_cell = neighbor_loc;
-                                }
+                            if (map_[neighbor_loc] == 0) {
+                                neighbor_cells++;
                             }
                         }
                     }
 
-                    if (search_orientation == -1) {
-                        min_distance += 1;
-                        if (next_cell == current_cell - rows_) {
-                            search_orientation = 0;
-                        } else if (next_cell == current_cell + rows_) {
-                            search_orientation = 180;
-                        } else if (next_cell == current_cell - 1) {
-                            search_orientation = 270;
-                        } else if (next_cell == current_cell + 1) {
-                            search_orientation = 90;
-                        }
-                    } else {
-                        // Rotation aware movement cost
-                        // Agent can rotate clockwise and counterclockwise too
-                        int desired_orientation;
-                        if (next_cell == current_cell - rows_) {
-                            desired_orientation = 0;
-                        } else if (next_cell == current_cell + rows_) {
-                            desired_orientation = 180;
-                        } else if (next_cell == current_cell - 1) {
-                            desired_orientation = 270;
-                        } else if (next_cell == current_cell + 1) {
-                            desired_orientation = 90;
-                        }
-
-                        int rotation_cost = std::min(abs(desired_orientation - search_orientation), 360 - abs(desired_orientation - search_orientation)) / 90;
-                        min_distance += (1 + rotation_cost);
-                        search_orientation = desired_orientation;
+                    if (neighbor_cells <= 2) {
+                        projectionBase[loc] = 1;
                     }
                 }
-
-                path.end_cell = end_cell;
-                path.timesteps = min_distance;
-
-                intraClusterHeuristics_[portal->id].paths_from_portal[portal->id].push_back(path);
             }
         }
-        
+
+        projectionBase_ = std::move(projectionBase);
     }
 
-    void PreprocessPipeline::computeInterClusterHeuristics() {
-        if (clusters_.empty()) return;
+    void PreprocessPipeline::debugResults() {
+        // output all results into txt files for debugging
 
-        int num_clusters = clusters_.size();
-        int total_portals = portals_.size();
-
-        // 1. Initialize the main table [From_Cluster][To_Cluster]
-        interClusterHeuristics_.resize(num_clusters);
-        for (int i = 0; i < num_clusters; ++i) {
-            interClusterHeuristics_[i].resize(num_clusters);
-        }
-
-        // 2. We need to map Global Portal IDs back to Local Cluster Indices 
-        std::vector<int> portal_local_index(total_portals, -1);
-        for (const auto& cluster : clusters_) {
-            for (int i = 0; i < static_cast<int>(cluster.portals.size()); ++i) {
-                portal_local_index[cluster.portals[i]->id] = i;
-            }
-        }
-
-        // 3. Resize the inner matrices for every pair of clusters
-        // This ensures interClusterHeuristics_[c1][c2] is a matrix of size [num_portals_c1][num_portals_c2]
-        for (int start_c = 0; start_c < num_clusters; ++start_c) {
-            for (int end_c = 0; end_c < num_clusters; ++end_c) {
-                int start_p_count = clusters_[start_c].portals.size();
-                int end_p_count = clusters_[end_c].portals.size();
-                
-                // Resize vector of vectors
-                interClusterHeuristics_[start_c][end_c].resize(start_p_count);
-                for (int k = 0; k < start_p_count; ++k) {
-                    interClusterHeuristics_[start_c][end_c][k].resize(end_p_count);
+        std::ofstream area_file(PREPROCESSING_DEBUG_PATH + "/debug_area_map.txt");
+        for (int r = 0; r < rows_; r++) {
+            for (int c = 0; c < cols_; c++) {
+                int loc = getLoc(r, c);
+                if (map_[loc] == 1) {
+                    area_file << "@";
+                } else {
+                    area_file << areaMap_[loc];
                 }
             }
+            area_file << "\n";
         }
 
-        // 4. Run Dijkstra from EVERY portal in the map
-        for (int start_p_id = 0; start_p_id < total_portals; ++start_p_id) {
-            
-            Portal* start_portal = portals_[start_p_id];
-            int start_cluster_id = start_portal->from_cluster_id;
-            int start_local_idx = portal_local_index[start_p_id];
+        area_file.close();
 
-            // Dijkstra Data Structures
-            std::vector<int> dist(total_portals, std::numeric_limits<int>::max());
-            // Parent stores: {Previous_Portal_ID, Timesteps_Taken_In_Edge}
-            std::vector<std::pair<int, int>> parent(total_portals, {-1, 0});
-            
-            // Min-Priority Queue: <Current_Dist, Portal_ID>
-            std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<std::pair<int, int>>> pq;
+        std::ofstream dt_file(PREPROCESSING_DEBUG_PATH + "/debug_distance_transform.txt");
+        for (int r = 0; r < rows_; r++) {
+            for (int c = 0; c < cols_; c++) {
+                int loc = getLoc(r, c);
+                dt_file << distanceTransform_[loc];
+            }
+            dt_file << "\n";
+        }
+        dt_file.close();
 
-            // Init Start
-            dist[start_p_id] = 0;
-            pq.push({0, start_p_id});
+        std::ofstream cluster_file(PREPROCESSING_DEBUG_PATH + "/debug_clusters.txt");
 
-            while (!pq.empty()) {
-                int d = pq.top().first;
-                int u_id = pq.top().second;
-                pq.pop();
+        for (const Cluster& cluster : clusters_) {
+            cluster_file << "Cluster ID: " << cluster.id << "\n";
+            cluster_file << "Area ID: " << cluster.area_id << "\n";
+            cluster_file << "Size: " << cluster.size << "\n";
+            cluster_file << "Maxima: " << cluster.maxima << "\n";
+            cluster_file << "Cells: ";
+            for (int i = cluster.cells_begin; i <= cluster.cells_end; i++) {
+                cluster_file << clusterCells_[i] << " ";
+            }
+            cluster_file << "\nNeighbors: ";
+            for (int i = cluster.neighbor_begin; i <= cluster.neighbor_end; i++) {
+                cluster_file << clusterNeighbors_[i] << " ";
+            }
+            cluster_file << "\nPortals: ";
+            for (int i = cluster.portal_begin; i <= cluster.portal_end; i++) {
+                cluster_file << portals_[i].id << " ";
+            }
+            cluster_file << "\n\n";
 
-                if (d > dist[u_id]) continue;
-
-                // --- TRANSITION 1: Cross the Portal (Inter-Cluster) ---
-                // Move from this portal to its opposite (physically stepping through the door)
-                Portal* u_portal = portals_[u_id];
-                if (u_portal->opposite_portal_id != -1) {
-                    int v_id = u_portal->opposite_portal_id;
-                    int weight = 1; // Assuming 1 timestep to cross "through" the portal boundary
-                    
-                    if (dist[u_id] + weight < dist[v_id]) {
-                        dist[v_id] = dist[u_id] + weight;
-                        parent[v_id] = {u_id, weight};
-                        pq.push({dist[v_id], v_id});
-                    }
-                }
-
-                // --- TRANSITION 2: Cross the Room (Intra-Cluster) ---
-                // Move from this portal to other portals in the SAME cluster
-                // We use the precomputed intraClusterHeuristics_
-                if (static_cast<size_t>(u_id) < intraClusterHeuristics_.size()) {
-                    const auto& heuristic_entry = intraClusterHeuristics_[u_id];
-                    
-                    // Iterate over all reachable portals within the cluster
-                    for (const auto& [target_p_id, path_heuristics] : heuristic_entry.paths_from_portal) {
-                        if (path_heuristics.empty()) continue;
-
-                        // path_heuristics is a vector, assuming index 0 is the best path calculated previously
-                        int weight = path_heuristics[0].timesteps;
-                        int v_id = target_p_id;
-
-                        if (dist[u_id] + weight < dist[v_id]) {
-                            dist[v_id] = dist[u_id] + weight;
-                            parent[v_id] = {u_id, weight};
-                            pq.push({dist[v_id], v_id});
+            for (int r = 0; r < rows_; r++) {
+                for (int c = 0; c < cols_; c++) {
+                    int loc = getLoc(r, c);
+                    if (clusterMap_[loc] == cluster.id) {
+                        cluster_file << "C";
+                    } else {
+                        if (map_[loc] == 1) {
+                            cluster_file << "@";
+                        } else {
+                            cluster_file << ".";
                         }
                     }
                 }
+                cluster_file << "\n";
             }
 
-            // 5. Reconstruct paths for all reachable destinations
-            for (int end_p_id = 0; end_p_id < total_portals; ++end_p_id) {
-                if (dist[end_p_id] == std::numeric_limits<int>::max()) continue;
-                if (start_p_id == end_p_id) continue;
+            cluster_file << "\n====================\n\n";
+        }
 
-                Portal* end_portal = portals_[end_p_id];
-                int end_cluster_id = end_portal->from_cluster_id;
-                int end_local_idx = portal_local_index[end_p_id];
+        cluster_file.close();
 
-                // Build the PortalPath object
-                PortalPath path;
-                path.total_timesteps = dist[end_p_id];
-                
-                // Backtrack from end_p_id to start_p_id
-                int curr = end_p_id;
-                int current_time_cursor = dist[end_p_id];
+        std::ofstream portal_file(PREPROCESSING_DEBUG_PATH + "/debug_portals.txt");
 
-                while (curr != start_p_id) {
-                    int prev = parent[curr].first;
-                    int edge_cost = parent[curr].second;
-
-                    PortalPathStep step;
-                    step.from_portal = prev;
-                    step.to_portal = curr;
-                    step.to_timestep = current_time_cursor;
-                    step.from_timestep = current_time_cursor - edge_cost;
-                    step.is_critical = portals_[curr]->is_critical;
-
-                    path.steps.push_back(step);
-
-                    current_time_cursor -= edge_cost;
-                    curr = prev;
+        for (int r = 0; r < rows_; r++) {
+            for (int c = 0; c < cols_; c++) {
+                int loc = getLoc(r, c);
+                if (portalMap_[loc] == -1) {
+                    if (map_[loc] == 1) { 
+                        portal_file << "@";
+                    } else {
+                        portal_file << ".";
+                    }
+                } else {
+                    portal_file << "P";
                 }
+            }
+            portal_file << "\n";
+        }
 
-                // Reverse steps because we backtracked
-                std::reverse(path.steps.begin(), path.steps.end());
+        cluster_file << "\n====================\n\n";
 
-                // Store in the heuristic matrix
-                interClusterHeuristics_[start_cluster_id][end_cluster_id][start_local_idx][end_local_idx] = path;
+        for (const Portal& portal : portals_) {
+            portal_file << "Portal ID: " << portal.id << "\n";
+            portal_file << "From Cluster ID: " << portal.from << "\n";
+            portal_file << "To Cluster ID: " << portal.to << "\n";
+            portal_file << "Size: " << portal.size << "\n";
+            portal_file << "Cells: ";
+            for (int i = portal.cells_begin; i <= portal.cells_end; i++) {
+                portal_file << portalCells_[i] << " ";
+            }
+            portal_file << "\nIs Critical This Side: " << portal.is_critical_this_side << "\n";
+            portal_file << "Is Critical Other Side: " << portal.is_critical_other_side << "\n";
+            portal_file << "Opposite Portal ID: " << portal.opposite_portal_id << "\n";
+            portal_file << "Has Shared Area: " << portal.has_shared_area << "\n\n";
+            if (portal.has_shared_area) {
+                portal_file << "Shared Area Portals: ";
+                for (int i = portal.shared_begin; i <= portal.shared_end; i++) {
+                    portal_file << sharedAreaPortals_[i] << " ";
+                }
+                portal_file << "\n";
+            }
+
+            std::unordered_set<int> clusterCellsSet;
+            for (int i = clusters_[portal.from].cells_begin; i <= clusters_[portal.from].cells_end; i++) {
+                clusterCellsSet.insert(clusterCells_[i]);
+            }
+
+            std::vector<int> portalDistancesList(rows_ * cols_, -1);
+            for (int i = 0; i < rows_ * cols_; i++) {
+                if (clusterCellsSet.find(i) != clusterCellsSet.end()) {
+                    portalDistancesList[i] = portalDistances_[portal.distances_index * rows_ * cols_ + i];
+                }
+            }
+
+            for (int r = 0; r < rows_; r++) {
+                for (int c = 0; c < cols_; c++) {
+                    int loc = getLoc(r, c);
+                    if (portalDistancesList[loc] == -1) {
+                        if (map_[loc] == 1) {
+                            portal_file << "@";
+                        } else {
+                            portal_file << ".";
+                        }
+                    } else {
+                        portal_file << portalDistancesList[loc] % 10;
+                    }
+                }
+                portal_file << "\n";
+            }
+
+            portal_file << "\n====================\n\n";
+
+            if (portal.intra_h_begin != -1) {
+                portal_file << "Intra-Cluster Heuristics:\n";
+                for (int i = portal.intra_h_begin; i <= portal.intra_h_end; i++) {
+                    portal_file << intraClusterHeuristics_[i] << " ";
+                }
+                portal_file << "\n\n";
+            }
+
+            if (portal.inter_h_begin != -1) {
+                portal_file << "Inter-Cluster Heuristics:\n";
+                for (int i = portal.inter_h_begin; i <= portal.inter_h_end; i++) {
+                    portal_file << interClusterHeuristics_[i] << " ";
+                }
+                portal_file << "\n\n";
             }
         }
+
+        portal_file.close();
     }
 
     void PreprocessPipeline::runPreprocessing() {
@@ -1069,17 +1413,72 @@ namespace PreprocessingPipeline {
 
         if (preprocessing_done_) return;
 
+        std::cout << "Starting preprocessing..." << std::endl;
+        std::cout << "Identifying distinct areas..." << std::endl;
         identifyDistinctAreas();
+        std::cout << "Computing distance transform..." << std::endl;
         computeDistanceTransform();
+        std::cout << "Finding local maximas..." << std::endl;
         findLocalMaximas();
+        std::cout << "Forming initial clusters..." << std::endl;
         formInitialClusters();
+        std::cout << "Clustering DT1 cells..." << std::endl;
         clusterDT1Cells(MINIMUM_DT1_CLUSTER_SIZE);
+        std::cout << "Assigning leftover cells..." << std::endl;
         assignLeftoverCells();
-        updateTopology();
+        std::cout << "Updating neighbors..." << std::endl;
+        updateNeighbors();
+        std::cout << "Updating portals..." << std::endl;
         updatePortals();
+        std::cout << "Computing portal distances..." << std::endl;
         computePortalDistances();
+        std::cout << "Computing intra-cluster shortest paths..." << std::endl;
         computeIntraClusterShortestPaths();
+        std::cout << "Computing inter-cluster heuristics..." << std::endl;
         computeInterClusterHeuristics();
+        std::cout << "Preprocessing completed." << std::endl;
         preprocessing_done_ = true;
+
+        if (DEBUG_PREPROCESSING) {
+            std::cout << "Debugging preprocessing results..." << std::endl;
+            debugResults();
+            std::cout << "Debugging completed." << std::endl;
+        }
+    }
+
+    PreprocessPipeline::PreprocessPipeline() {
+        initialized_ = false;
+        preprocessing_done_ = false;
+
+        map_.clear();
+        rows_ = -1;
+        cols_ = -1;
+
+        areaMap_.clear();
+        distanceTransform_.clear();
+        localMaximaPlateaus_.clear();
+        clusters_.clear();
+        clusterMap_.clear();
+        clusterCells_.clear();
+        clusterNeighbors_.clear();
+        portals_.clear();
+        portalMap_.clear();
+        portalCells_.clear();
+        sharedAreaPortals_.clear();
+        portalDistances_.clear();
+        intraClusterHeuristics_.clear();
+        interClusterHeuristics_.clear();
+    }
+
+    void PreprocessPipeline::initialize(const std::vector<int>& map, int rows, int cols) {
+        if (initialized_) return;
+
+        map_ = map;
+        rows_ = rows;
+        cols_ = cols;
+
+        runPreprocessing();
+        
+        initialized_ = true;
     }
 }

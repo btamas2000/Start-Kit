@@ -1,67 +1,54 @@
 #ifndef PREPROCESS_H
 #define PREPROCESS_H
 
+#include <vector>
+#include <unordered_set>
+#include <unordered_map>
+#include <queue>
+#include <string>
+#include <fstream>
+
 // Everything related to preprocessing the static environment for pathfinding
 namespace PreprocessingPipeline {
     const int MINIMUM_DT1_CLUSTER_SIZE = 4;
 
+    const bool DEBUG_PREPROCESSING = true;
+    const std::string PREPROCESSING_DEBUG_PATH = "preprocessing_debug";
+
     struct Portal {
-        int id;
-        int from;
-        int to;
-        std::vector<int> cells;  // Flattened 1D indices
-        int opposite_portal_id;
-        bool is_critical;
-        bool has_shared_area;
-        std::unordered_set<int> affected_portals;
+        int id; // id of the portal
+        int from; // cluster id where the portal is
+        int to; // cluster id where the portal leads to
+        int size; // size of the portal in cells
+        int cells_begin; // beginning index of the portal cells in the global portalCells_ vector
+        int cells_end; // ending index of the portal cells in the global portalCells_ vector
+        int portal_begin; // beginning index of the portal cells in the global portalCells_ vector
+        int portal_end; // ending index of the portal cells in the global portalCells_ vector
+        int opposite_portal_id; // id of the opposite direction portal
+        bool is_critical_this_side; // true if this portal is critical for pathfinding from this side
+        bool is_critical_other_side; // true if the opposite portal is critical for pathfinding
+        bool has_shared_area; // true if in the same cluster, another portal shares area with this portal
+        int shared_begin; // beginning index of shared area portals in sharedAreaPortals_ vector
+        int shared_end; // ending index of shared area portals in sharedAreaPortals_ vector
+        int distances_index; // index to identify which slice of portalDistances_ contains distances for this portal
+        int intra_h_begin; // beginning index of intra-cluster heuristics for this portal
+        int intra_h_end; // ending index of intra-cluster heuristics for this portal
+        int inter_h_begin; // beginning index of inter-cluster heuristics for this portal
+        int inter_h_end; // ending index of inter-cluster heuristics for this portal
     };
 
     struct Cluster {
-        int id;
-        int area_id;
-        std::vector<int> cells;  // Flattened 1D indices
-        int size;
-        int maxima;
-        std::vector<int> neighbors;
-        std::vector<Portal*> portals;
+        int id; // cluster id
+        int area_id; // area id where the cluster is located
+        int size; // number of cells in the cluster
+        int maxima; // local maxima value of the cluster
+        int cells_begin; // beginning index of the cluster cells in the global clusterCells_ vector
+        int cells_end; // ending index of the cluster cells in the global clusterCells_ vector
+        int neighbor_begin; // beginning index of the cluster neighbors in the global clusterNeighbors_ vector
+        int neighbor_end; // ending index of the cluster neighbors in the global clusterNeighbors_ vector
+        int portal_begin; // beginning index of the cluster portals in the global portals_ vector
+        int portal_end; // ending index of the cluster portals in the global portals_ vector
     };
-
-    // Precomputed costs to reach the portal's cells within the cluster
-    struct PortalDistances {
-        int p_id;
-        std::vector<std::pair<int, int>> distances;
-    };
-
-    struct PortalHeuristic {
-        int portal_to;
-        int start_cell;
-        int end_cell;
-        int timesteps;
-    };
-
-    struct IntraClusterHeuristic {
-        int portal_from;
-        std::unordered_map<int, std::vector<PortalHeuristic>> paths_from_portal;
-    };
-
-    struct PortalPathStep {
-        int from_portal;
-        int to_portal;
-        bool is_critical;
-        int from_timestep;
-        int to_timestep;
-    };
-
-    struct PortalPath {
-        std::vector<PortalPathStep> steps;
-        int total_timesteps;
-    };
-
-    // Indexed by [start_portal][end_portal]
-    typedef std::vector<std::vector<PortalPath>> InterClusterPath;
-
-    // Indexed by [cluster_from][cluster_to]
-    typedef std::vector<std::vector<InterClusterPath>> InterClusterHeuristic;
 
     class PreprocessPipeline {
     public:
@@ -76,15 +63,7 @@ namespace PreprocessingPipeline {
         PreprocessPipeline& operator=(const PreprocessPipeline&) = delete;
         
         // Initialize with map data - runs clustering internally
-        void initialize(const std::vector<int>& map, int rows, int cols) {
-            if (initialized_) return;
-
-            map_ = map;
-            rows_ = rows;
-            cols_ = cols;
-
-            initialized_ = true;
-        }
+        void initialize(const std::vector<int>& map, int rows, int cols);
 
         // Check if initialized
         bool isInitialized() const { return initialized_; }
@@ -117,24 +96,40 @@ namespace PreprocessingPipeline {
             return clusterMap_;
         }
 
+        const std::vector<int>& getClusterCells() const {
+            return clusterCells_;
+        }
+
         // Get portals
-        const std::vector<Portal*>& getPortals() const {
+        const std::vector<Portal>& getPortals() const {
             return portals_;
         }
 
+        const std::vector<int>& getPortalMap() const {
+            return portalMap_;
+        }
+
+        const std::vector<int>& getPortalCells() const {
+            return portalCells_;
+        }
+
         // Get portal distances
-        const std::vector<PortalDistances*>& getPortalDistances() const {
+        const std::vector<int>& getPortalDistances() const {
             return portalDistances_;
         }
 
         // Get intra-cluster heuristics
-        const std::vector<IntraClusterHeuristic>& getIntraClusterHeuristics() const {
+        const std::vector<int>& getIntraClusterHeuristics() const {
             return intraClusterHeuristics_;
         }
 
         // Get inter-cluster heuristics
-        const InterClusterHeuristic& getInterClusterHeuristics() const {
+        const std::vector<int>& getInterClusterHeuristics() const {
             return interClusterHeuristics_;
+        }
+
+        const std::vector<int>& getProjectionBase() const {
+            return projectionBase_;
         }
 
         int getClusterId(int loc) const {
@@ -144,12 +139,26 @@ namespace PreprocessingPipeline {
             return clusterMap_[loc];
         }
 
+        int getAreaId(int loc) const {
+            if (loc < 0 || loc >= static_cast<int>(areaMap_.size())) {
+                return -1;
+            }
+            return areaMap_[loc];
+        }
+
     private:
         // Private constructor for singleton
         PreprocessPipeline();
         ~PreprocessPipeline() = default;
 
         inline int getLoc(int row, int col) const { return row * cols_ + col; }
+
+        inline int getRow(int loc) const { return loc / cols_; }
+        inline int getCol(int loc) const { return loc % cols_; }
+
+        std::pair<int, int> findGlobalMinMax();
+
+        std::vector<int> selectCellsAtDistance(int targetDistance);
 
         // Distict area identification
         void identifyDistinctAreas();
@@ -158,7 +167,7 @@ namespace PreprocessingPipeline {
         void computeDistanceTransform();
 
         // Local maxima identification
-        void findLocalMaximas(int threshold);
+        void findLocalMaximas();
 
         // Merge diagonally connected local maxima plateaus
         void mergeLocalMaximas();
@@ -172,8 +181,11 @@ namespace PreprocessingPipeline {
         // Greedy assignment of leftover cells
         void assignLeftoverCells();
 
-        // Update cluster neighbor information
-        void updateTopology();
+        // // Update cluster neighbor information
+        // void updateTopology();
+
+        // Identify neighbors
+        void updateNeighbors();
 
         // Identify portal connections
         void updatePortals();
@@ -184,8 +196,13 @@ namespace PreprocessingPipeline {
         // Precompute intra-cluster shortest paths between portals
         void computeIntraClusterShortestPaths();
 
-        // Precompute inter-cluster paths via portals
+        // Precompute inter-cluster shortest paths between clusters
         void computeInterClusterHeuristics();
+
+        // Compute projection base map for dynamic environment
+        void computeProjectionBase();
+
+        void debugResults();
 
         bool initialized_;
         bool preprocessing_done_;
@@ -196,15 +213,24 @@ namespace PreprocessingPipeline {
         int cols_;
         
         // Preprocessing data members
-        std::vector<int> areaMap_; // distinct area IDs for each cell
+        std::vector<int> areaMap_; // cell to area mapping
         std::vector<int> distanceTransform_; // distance to nearest obstacle
-        std::vector<std::pair<int, std::vector<int>>> localMaximaPlateaus_; // local maxima plateaus
+        std::vector<std::pair<int, std::vector<int>>> localMaximaPlateaus_; // local maxima plateaus, only used during preprocessing
         std::vector<Cluster> clusters_; // computed clusters
         std::vector<int> clusterMap_; // cell-to-cluster mapping
-        std::vector<Portal*> portals_; // computed portals
-        std::vector<PortalDistances*> portalDistances_; // precomputed portal distances within clusters
-        std::vector<IntraClusterHeuristic> intraClusterHeuristics_; // precomputed intra-cluster shortest paths between portals
-        InterClusterHeuristic interClusterHeuristics_; // precomputed inter-cluster paths via portals
+        std::vector<int> clusterCells_; // cells in each cluster, ordered by cluster id
+        std::vector<int> clusterNeighbors_; // neighbors of each cluster, ordered by cluster id
+        std::vector<Portal> portals_; // computed portals
+        std::vector<int> portalMap_; // cell-to-portal mapping
+        std::vector<int> portalCells_; // cells in each portal, ordered by portal id
+        std::vector<int> sharedAreaPortals_; // portals that share area with other portals
+        // portal distances within clusters, flattened vector of map size × maximum number of portals in a cluster
+        // contains distances from a mix of portals, indexed by a slice id to get specific portal distances
+        // mixed data to save memory allocations and also to keep data locality
+        std::vector<int> portalDistances_; // flattened portal distances
+        std::vector<int> intraClusterHeuristics_; // precomputed intra-cluster shortest paths between portals
+        std::vector<int> interClusterHeuristics_; // precomputed inter-cluster shortest paths between portals
+        std::vector<int> projectionBase_; // base map for projection logic in dynamic environment
     };
 
 } // namespace PreprocessingPipeline

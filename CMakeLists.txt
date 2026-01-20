@@ -29,13 +29,13 @@ include_directories("inc")
 include_directories("default_planner")
 
 include_directories("schedulers/hungarian/inc")
-include_directories("schedulers/hungarian2/inc")
-
-include_directories("planners/cluster_pibt/inc")
+include_directories("final_scheduler/inc")
+include_directories("final_planner/inc")
+include_directories("final_utilities/inc")
 
 include_directories("custom_utils/inc")
 
-file(GLOB SOURCES "src/*.cpp" "default_planner/*.cpp" "schedulers/hungarian/src/*.cpp" "schedulers/hungarian2/src/*.cpp" "planners/cluster_pibt/src/*.cpp" "custom_utils/src/*.cpp")
+file(GLOB SOURCES "src/*.cpp" "default_planner/*.cpp" "final_utilities/src/*.cpp" "schedulers/hungarian/src/*.cpp" "final_scheduler/src/*.cpp" "final_planner/src/*.cpp")
 
 
 # Find Boost

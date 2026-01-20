@@ -3,15 +3,13 @@
 
 #include "ActionModel.h"
 #include "SharedEnv.h"
+#include "dynamic.h"
 
-namespace MyPlanner{
-
+namespace MyPlanner {
     
     void initialize(int preprocess_time_limit, SharedEnvironment* env);
 
     void plan(int time_limit,std::vector<Action> & actions,  SharedEnvironment* env);
-
-
 }
 
 #endif // FINAL_PLANNER_H

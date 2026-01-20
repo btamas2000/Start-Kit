@@ -43,6 +43,24 @@ struct Task
         return t_revealed + t_deadline >= t_completed;
     }
 
+    int get_slack(int t_current) {
+        if (t_deadline < 0) // no deadline -> no slack
+            return 0;
+        if (t_completed >= 0) { // already completed
+            if (t_completed <= t_revealed + t_deadline) {
+                return 0; // no delay
+            } else {
+                return t_completed - (t_revealed + t_deadline); // delay amount
+            }
+        } else { // not yet completed
+            if (t_current <= t_revealed + t_deadline) {
+                return 0; // no delay
+            } else {
+                return t_current - (t_revealed + t_deadline); // delay amount
+            }
+        }
+    }
+
     //Task(int task_id, int location): task_id(task_id), locations({location}) {};
     Task(int task_id, list<int> location, int t_revealed, int deadline): task_id(task_id), t_revealed(t_revealed)
     {

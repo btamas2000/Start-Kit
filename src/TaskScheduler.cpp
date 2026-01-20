@@ -2,7 +2,7 @@
 
 #include "scheduler.h"
 #include "const.h"
-#include "hungarian3.h"
+#include "final_scheduler.h"
 
 /**
  * Initializes the task scheduler with a given time limit for preprocessing.
