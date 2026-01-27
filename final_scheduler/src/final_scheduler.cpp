@@ -262,7 +262,7 @@ static std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& 
 }
 
 void HungarianScheduler3::hun_schedule_plan(int time_limit, std::vector<int> & proposed_schedule, SharedEnvironment* env) {
-    std::cout << "HungarianScheduler3: Scheduling at timestep " << env->curr_timestep << "\n";
+    // std::cout << "HungarianScheduler3: Scheduling at timestep " << env->curr_timestep << "\n";
 
     DynamicData::DynamicEnvironment::getInstance().initializeLiveData(); // if its not the first timestep, this will return immediately
     DynamicData::DynamicEnvironment::getInstance().advanceTimeStep(); // advance internal time and update agents (if first timestep, this will do nothing)
@@ -397,6 +397,9 @@ void HungarianScheduler3::hun_schedule_plan(int time_limit, std::vector<int> & p
     // for (int i = 0; i < proposed_schedule.size(); ++i) {
     //     if (proposed_schedule[i] != -1) {
     //         std::cout << "  Agent " << i << " assigned to Task " << proposed_schedule[i] << "\n";
+    //         for (int loc : env->task_pool[proposed_schedule[i]].locations) {
+    //             std::cout << "    Location: " << loc << "\n";
+    //         }
     //     } else {
     //         std::cout << "  Agent " << i << " not assigned\n";
     //     }

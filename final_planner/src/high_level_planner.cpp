@@ -455,7 +455,7 @@ namespace DynamicData {
     }
 
     std::vector<HighLevelStep> HighLevelPlanner::planHighLevelPath(int agent_id) {
-        std::cout << "Planning high-level path for agent " << agent_id << "..." << std::endl;
+        // std::cout << "Planning high-level path for agent " << agent_id << "..." << std::endl;
         Agent& agent = DynamicEnvironment::getInstance().getAgents()[agent_id];
         SharedEnvironment* shared_env = DynamicEnvironment::getInstance().getSharedEnvironment();
 

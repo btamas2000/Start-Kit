@@ -34,11 +34,26 @@ namespace DynamicData {
     }
 
     void Agent::extendLowLevelPlan(const std::vector<LowLevelStep>& additional_steps, bool placeholder_extension) {
-        for (const auto& step : additional_steps) {
-            lowLevelPlan.emplace_back(step);
-        }
-        if (!placeholder_extension) {
-            ll_planned_until = static_cast<int>(lowLevelPlan.size()) - 1;
+        if (placeholder_extension) {
+            // extend placeholder steps only
+            for (const auto& step : additional_steps) {
+                if (step.placeholder_step) {
+                    lowLevelPlan.emplace_back(step);
+                }
+            }
+        } else {
+            // extend real path
+            // replace the steps after ll_planned_until
+            int index = ll_planned_until;
+            for (int i = 0; i < additional_steps.size(); i++) {
+                if (index + 1 > static_cast<int>(lowLevelPlan.size()) - 1) {
+                    lowLevelPlan.emplace_back(additional_steps[i]);
+                } else {
+                    lowLevelPlan[index + 1] = additional_steps[i];
+                }
+                index++;
+            }
+            ll_planned_until = index;
         }
     }
 
@@ -490,19 +505,27 @@ namespace DynamicData {
 
         for (int i = 0; i < static_cast<int>(rows_ * cols_); i++) {
             int index = entry_to_switch * rows_ * cols_ + i;
-            table_[index] = 0x00;
             edge_table_[index] = 0x00;
 
             if (map_base_[i] == -1) { // obstacle
                 table_[index] = OBS_STATIC; // hard reserved
+
+                soft_reservations_[index] = -1;
+
+                proj_east_[index] = -1;
+                proj_south_[index] = -1;
+                proj_west_[index] = -1;
+                proj_north_[index] = -1;
+            } else {
+                table_[index] = 0x00;
+
+                soft_reservations_[index] = 0;
+
+                proj_east_[index] = 0;
+                proj_south_[index] = 0;
+                proj_west_[index] = 0;
+                proj_north_[index] = 0;
             }
-
-            soft_reservations_[index] = 0;
-
-            proj_east_[index] = 0;
-            proj_south_[index] = 0;
-            proj_west_[index] = 0;
-            proj_north_[index] = 0;
         }
     }
 
@@ -664,15 +687,17 @@ namespace DynamicData {
             LowLevelStep first_step(0, shared_env_->curr_states[i].location, shared_env_->curr_states[i].orientation, Action::NA, false, -1);
             std::vector<LowLevelStep> initial_plan;
             initial_plan.emplace_back(first_step);
+            agents_[i].setLowLevelPlan(initial_plan);
+            reservation_table_.reservePath(initial_plan);
+            std::vector<LowLevelStep> initial_placeholder_plan;
             for (int t = 1; t < PLANNING_HORIZON; t++) {
                 LowLevelStep placeholder_step(t, shared_env_->curr_states[i].location, shared_env_->curr_states[i].orientation, Action::NA, true, -1);
-                initial_plan.emplace_back(placeholder_step);
+                reservation_table_.extendPathReservation(placeholder_step);
+                initial_placeholder_plan.emplace_back(placeholder_step);
             }
-            agents_[i].setLowLevelPlan(initial_plan);
+            agents_[i].extendLowLevelPlan(initial_placeholder_plan, true);
             agents_[i].setHighLevelReplanNeeded(true);
             agents_[i].setLowLevelReplanNeeded(true);
-
-            reservation_table_.reservePath(initial_plan);
         }
 
         current_simulation_time_ = 0;
@@ -717,6 +742,8 @@ namespace DynamicData {
                 agents_[i].setLowLevelReplanNeeded(true);
 
                 std::cout << "Warning: Agent " << i << " deviated from expected state at time " << current_simulation_time_ << std::endl;
+                std::cout << "         Expected location: " << current_step.second.location << ", orientation: " << current_step.second.orientation << std::endl;
+                std::cout << "         Actual location:   " << shared_env_->curr_states[i].location << ", orientation: " << shared_env_->curr_states[i].orientation << std::endl;
 
                 // also release current reservations as they are now invalid
                 std::vector<LowLevelStep> invalid_path;

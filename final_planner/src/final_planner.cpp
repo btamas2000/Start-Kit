@@ -8,6 +8,17 @@ void MyPlanner::initialize(int preprocess_time_limit, SharedEnvironment* env) {
     DynamicData::DynamicEnvironment::getInstance().initialize(env);
 }
 
+std::string action_tostring(Action action) {
+        switch (action) {
+            case Action::FW: return "FW";
+            case Action::W: return "W";
+            case Action::CR: return "CR";
+            case Action::CCR: return "CCR";
+            case Action::NA: return "NA";
+            default: return "UNKNOWN";
+        }
+    }
+
 void updateCongestionTrackerWithPlan(std::vector<DynamicData::HighLevelStep> plan) {
     const std::vector<PreprocessingPipeline::Portal>& portals = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortals();
     DynamicData::CongestionTracker& congestion_tracker = DynamicData::DynamicEnvironment::getInstance().getCongestionTracker();
@@ -123,7 +134,7 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
 
     auto cutoff_time = start_time + std::chrono::duration_cast<std::chrono::milliseconds>(duration_limit * 0.9);
 
-    std::cout << "MyPlanner: Planning at timestep " << env->curr_timestep << "\n";
+    // std::cout << "MyPlanner: Planning at timestep " << env->curr_timestep << "\n";
     
     actions.clear();
     actions.resize(env->num_of_agents, Action::W); // default to Wait
@@ -159,6 +170,17 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
                 continue;
             }
 
+            //debug
+            // if (agent_id == 34) {
+            //     // print high-level plan
+            //     std::cout << "MyPlanner: High-level plan for agent " << agent_id << ":\n";
+            //     for (const auto& step : hl_plan) {
+            //         std::cout << "  Type: " << (step.type == DynamicData::WaypointType::LOCATION ? "LOCATION" : "PORTAL") 
+            //                   << ", ID: " << step.id 
+            //                   << ", ArrivalTimeEst: " << step.arrival_time_est << "\n";
+            //     }
+            // }
+
             agents[agent_id].setHighLevelPlan(hl_plan);
             agents[agent_id].setHighLevelReplanNeeded(false);
 
@@ -171,7 +193,20 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
                 continue;
             }
 
-            std::cout << "MyPlanner: Low-level planning succeeded for agent " << agent_id << " with plan length " << ll_result.second.size() << "\n";
+            //debug
+            // if (agent_id == 34) {
+            //     // print low-level plan
+            //     std::cout << "MyPlanner: Low-level plan for agent " << agent_id << ":\n";
+            //     for (const auto& step : ll_result.second) {
+            //         std::cout << "  t: " << step.t 
+            //                   << ", loc: " << step.location 
+            //                   << ", orient: " << step.orientation 
+            //                   << ", action: " << action_tostring(step.nextAction) 
+            //                   << ", hl_index: " << step.hl_step_index << "\n";
+            //     }
+            // }
+
+            // std::cout << "MyPlanner: Low-level planning succeeded for agent " << agent_id << " with plan length " << ll_result.second.size() << "\n";
 
             DynamicData::ReservationTable& reservation_table = DynamicData::DynamicEnvironment::getInstance().getReservationTable();
 
@@ -199,12 +234,15 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
         // check if ll plan needs extension
         int ll_step_index = agents[agent_id].getLLStepIndex();
         int ll_planned_until = agents[agent_id].getLLPlannedUntil();
-        int extend_threshold = (ll_planned_until / DynamicData::PLANNING_HORIZON) * DynamicData::PLANNING_HORIZON + DynamicData::PLANNING_HORIZON - 1;
+        int extend_threshold = env->curr_timestep + DynamicData::PLANNING_HORIZON - 1;
         bool goal_reached = goalReachedInPlan(agents[agent_id].getLowLevelPlan(), agents[agent_id].getAssignedTaskID(), env);
         if (!goal_reached && ll_planned_until - ll_step_index < DynamicData::FILL_PLAN_AFTER) {
+            // std::cout << "MyPlanner: Extending low-level plan for agent " << agent_id << "\n";
+            // std::cout << "  Current LL step index: " << ll_step_index << ", planned until: " << ll_planned_until << ", extend threshold: " << extend_threshold << "\n"; 
             std::vector<DynamicData::LowLevelStep>& ll_plan = agents[agent_id].getLowLevelPlan();
             DynamicData::LowLevelStep& last_step = ll_plan[ll_planned_until];
 
+            std::cout << "Current path length: " << ll_plan.size() << std::endl;
             std::pair<bool, std::vector<DynamicData::LowLevelStep>> ll_extension_result = ll_planner.extendLowLevelPath(agent_id, last_step, extend_threshold);
 
             if (ll_extension_result.first) {
@@ -221,10 +259,21 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
                     ll_extension_result.second[0].placeholder_step,
                     ll_extension_result.second[0].hl_step_index
                 );
+
                 agents[agent_id].extendLowLevelPlan(std::vector<DynamicData::LowLevelStep>(ll_extension_result.second.begin() + 1, ll_extension_result.second.end()), false);
 
                 // reserve new path in reservation table
                 reservation_table.reservePath(ll_extension_result.second);
+
+                std::vector<DynamicData::LowLevelStep>& new_ll_plan = agents[agent_id].getLowLevelPlan();
+                std::cout << "New path length: " << new_ll_plan.size() << " for agent " << agent_id << std::endl;
+                for (const auto& step : new_ll_plan) {
+                    std::cout << "  t: " << step.t 
+                              << ", loc: " << step.location 
+                              << ", orient: " << step.orientation 
+                              << ", action: " << action_tostring(step.nextAction) 
+                              << ", hl_index: " << step.hl_step_index << "\n";
+                }
             } else {
                 std::cout << "MyPlanner: Low-level plan extension failed for agent " << agent_id << "\n";
                 agents[agent_id].setLowLevelReplanNeeded(true);
@@ -318,8 +367,8 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
         valid = (reverted_agents.size() == 0);
     }
 
-    std::cout << "MyPlanner: Debugging Reservation Table at timestep " << env->curr_timestep << ":\n";
-    DynamicData::DynamicEnvironment::getInstance().getReservationTable().printTablesAtTimestep(env->curr_timestep);
+    // std::cout << "MyPlanner: Debugging Reservation Table at timestep " << env->curr_timestep << ":\n";
+    // DynamicData::DynamicEnvironment::getInstance().getReservationTable().printTablesAtTimestep(env->curr_timestep);
 
     return;
 }

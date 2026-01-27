@@ -31,7 +31,7 @@ namespace DynamicData {
         return static_cast<float>(std::abs(r1 - r2) + std::abs(c1 - c2));
     }
 
-    float LowLevelPlanner::getGScore(LLNode* from_node, int to_location, int to_orientation) {
+    float LowLevelPlanner::getGScore(LLNode* from_node, int to_location, int to_orientation, int agent_id) {
         SharedEnvironment* shared_env = DynamicEnvironment::getInstance().getSharedEnvironment();
 
         // basic cost is previous g score + 1 for moving to next location (applied later)
@@ -42,7 +42,20 @@ namespace DynamicData {
         bool soft_reserved = DynamicEnvironment::getInstance().getReservationTable().isCellSoftReserved(to_location, from_node->timestep + 1);
 
         if (soft_reserved) {
-            g_score += (1.0f * SOFT_RESERVATION_PENALTY);
+            // warning: can be soft reserved by itself if replanning
+            const std::vector<LowLevelStep>& ll_plan = DynamicEnvironment::getInstance().getAgents()[agent_id].getLowLevelPlan();
+            int ll_planned_until = DynamicEnvironment::getInstance().getAgents()[agent_id].getLLPlannedUntil();
+            if (ll_planned_until + 1 < ll_plan.size()) {
+                int placeholder_start = ll_plan[ll_planned_until + 1].t;
+                int placeholder_end = ll_plan.back().t;
+                if (from_node->timestep + 1 >= placeholder_start && from_node->timestep + 1 <= placeholder_end && ll_plan[ll_planned_until + 1].location == to_location) {
+                    g_score += 1.0f; // no penalty, it's its own placeholder
+                } else {
+                    g_score += (1.0f * SOFT_RESERVATION_PENALTY);
+                }
+            } else {
+                g_score += (1.0f * SOFT_RESERVATION_PENALTY);
+            }
         } else {
             g_score += 1.0f;
         }
@@ -204,6 +217,20 @@ namespace DynamicData {
             LLNode* current_node = open_set.top();
             open_set.pop();
 
+            //debug
+            // if (agent_id == 34) {
+            //     // print node info
+            //     std::cout << "LLNode: loc=" << current_node->location
+            //               << ", orient=" << current_node->orientation
+            //               << ", t=" << current_node->timestep
+            //               << ", hl_index=" << current_node->hl_step_index
+            //               << ", g=" << current_node->g_score
+            //               << ", h=" << current_node->h_score
+            //               << ", f=" << current_node->getF()
+            //               << ", action=" << action_tostring(current_node->action_taken)
+            //               << std::endl;
+            // }
+
             if (closed_set.find(current_node) != closed_set.end()) {
                 continue; // already processed
             }
@@ -272,7 +299,7 @@ namespace DynamicData {
                         current_node->orientation,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, current_node->orientation),
+                        getGScore(current_node, current_node->location, current_node->orientation, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::W
@@ -300,7 +327,7 @@ namespace DynamicData {
                         new_orientation_cr,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, new_orientation_cr),
+                        getGScore(current_node, current_node->location, new_orientation_cr, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::CR
@@ -325,7 +352,7 @@ namespace DynamicData {
                         new_orientation_ccr,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, new_orientation_ccr),
+                        getGScore(current_node, current_node->location, new_orientation_ccr, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::CCR
@@ -392,7 +419,7 @@ namespace DynamicData {
                             current_node->orientation,
                             current_node->timestep + 1,
                             next_hl_index,
-                            getGScore(current_node, cell_forward_location, current_node->orientation),
+                            getGScore(current_node, cell_forward_location, current_node->orientation, agent_id),
                             getHScore(cell_forward_location, cluster_crossing, hl_plan[next_hl_index]),
                             current_node,
                             Action::FW
@@ -492,7 +519,7 @@ namespace DynamicData {
 
             // check if reached the limit of planning time
 
-            if (current_node->timestep - start_time >= PLANNING_HORIZON - 1) {
+            if (current_node->timestep >= extend_until_timestep) {
                 // reached planning horizon
                 found = true;
                 path = reconstructPath(current_node);
@@ -545,7 +572,7 @@ namespace DynamicData {
                         current_node->orientation,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, current_node->orientation),
+                        getGScore(current_node, current_node->location, current_node->orientation, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::W
@@ -573,7 +600,7 @@ namespace DynamicData {
                         new_orientation_cr,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, new_orientation_cr),
+                        getGScore(current_node, current_node->location, new_orientation_cr, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::CR
@@ -598,7 +625,7 @@ namespace DynamicData {
                         new_orientation_ccr,
                         current_node->timestep + 1,
                         current_node->hl_step_index,
-                        getGScore(current_node, current_node->location, new_orientation_ccr),
+                        getGScore(current_node, current_node->location, new_orientation_ccr, agent_id),
                         getHScore(current_node->location, cluster_crossing, hl_plan[current_node->hl_step_index]),
                         current_node,
                         Action::CCR
@@ -665,7 +692,7 @@ namespace DynamicData {
                             current_node->orientation,
                             current_node->timestep + 1,
                             next_hl_index,
-                            getGScore(current_node, cell_forward_location, current_node->orientation),
+                            getGScore(current_node, cell_forward_location, current_node->orientation, agent_id),
                             getHScore(cell_forward_location, cluster_crossing, hl_plan[next_hl_index]),
                             current_node,
                             Action::FW

@@ -76,7 +76,7 @@ namespace DynamicData {
 
         float manhattanDistance(int r1, int c1, int r2, int c2);
 
-        float getGScore(LLNode* from_node, int to_location, int to_orientation);
+        float getGScore(LLNode* from_node, int to_location, int to_orientation, int agent_id);
 
         float getHScore(int location, bool cluster_crossing, const HighLevelStep& hl_step);
 
