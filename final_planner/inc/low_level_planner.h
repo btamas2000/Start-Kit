@@ -26,31 +26,34 @@ namespace DynamicData {
     };
 
     struct LLNodeCompare {
-        bool operator()(const LLNode* a, const LLNode* b) const {
-            if (a->getF() - b->getF() < 0.0001f) {
-                // prefer g score if f scores are similar
-                return a->g_score > b->g_score;
+        bool operator()(const LLNode* a, const LLNode* b) const {           
+            if (a->hl_step_index != b->hl_step_index) {
+                return a->hl_step_index < b->hl_step_index;
             }
-            else {
+            if (std::abs(a->getF() - b->getF()) > 0.0001f) {
                 return a->getF() > b->getF();
             }
+            return a->g_score > b->g_score; 
         }
     };
 
     struct LLNodeHash {
         std::size_t operator()(const LLNode* node) const {
-            // Hash based on the State (Location, Orientation, Time)
-            return std::hash<int>()(node->location) ^ 
-                std::hash<int>()(node->orientation) ^ 
-                std::hash<int>()(node->timestep);
+            std::size_t h1 = std::hash<int>()(node->location);
+            std::size_t h2 = std::hash<int>()(node->orientation);
+            std::size_t h3 = std::hash<int>()(node->timestep);
+            std::size_t h4 = std::hash<int>()(node->hl_step_index);
+
+            return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
         }
     };
 
     struct LLNodeEqual {
         bool operator()(const LLNode* a, const LLNode* b) const {
             return a->location == b->location &&
-                a->orientation == b->orientation &&
-                a->timestep == b->timestep;
+                   a->orientation == b->orientation &&
+                   a->timestep == b->timestep &&
+                   a->hl_step_index == b->hl_step_index;
         }
     };
 
@@ -67,6 +70,7 @@ namespace DynamicData {
         std::vector<LLNode*> node_pool_;
 
         const float SOFT_RESERVATION_PENALTY = 5.0f;
+        const float LL_LARGE_COST = 1e6f;
 
         void clearNodePool();
 
@@ -74,7 +78,7 @@ namespace DynamicData {
 
         float getGScore(LLNode* from_node, int to_location, int to_orientation);
 
-        float getHScore(int location, bool cluster_crossing, HighLevelStep& hl_step);
+        float getHScore(int location, bool cluster_crossing, const HighLevelStep& hl_step);
 
         std::vector<LowLevelStep> reconstructPath(LLNode* goal_node);
     };

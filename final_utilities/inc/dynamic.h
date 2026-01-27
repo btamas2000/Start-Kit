@@ -90,9 +90,7 @@ namespace DynamicData {
         void assignTask(int task_id);
 
         const std::vector<HighLevelStep>& getHighLevelPlan() const { return highLevelPlan; }
-        const std::vector<LowLevelStep>& getLowLevelPlan() const { return lowLevelPlan; }
-
-        const std::vector<LowLevelStep>& getLowLevelPlanFromIndex() const;
+        std::vector<LowLevelStep>& getLowLevelPlan() { return lowLevelPlan; }
 
         int getRemainingPlannedSteps() const { return ll_planned_until - ll_step_index + 1; }
 
@@ -169,9 +167,8 @@ namespace DynamicData {
         void initialize(int window_size, std::vector<int> map_base, int rows, int cols);
         
         void reservePath(std::vector<LowLevelStep>& path);
-        void releasePath(std::vector<LowLevelStep>& path);
-        
-        void extendPathReservation(const LowLevelStep& last_step, std::vector<LowLevelStep>& path);
+        void releasePath(const std::vector<LowLevelStep>& path);
+        void extendPathReservation(const LowLevelStep& extension_step);
 
         void advanceTable(int current_time);
 
@@ -179,6 +176,9 @@ namespace DynamicData {
         bool isCellSoftReserved(int location, int timestep);
         Projections getProjections(int location, int timestep);
         uint8_t getEdgeReservations(int location, int timestep);
+
+        // debug tables
+        void printTablesAtTimestep(int timestep);
 
     private:
         std::vector<uint8_t> table_;        // for vertex conflicts, static obstacles and projections
@@ -256,6 +256,34 @@ namespace DynamicData {
 
         int getCurrentTime() const {
             return current_simulation_time_;
+        }
+
+        int getGlobalNextPriority() {
+            return global_next_priority_++;
+        }
+
+        void setGlobalNextPriority(int val) {
+            global_next_priority_ = val;
+        }
+
+        void removeTaskFromPool(int task_id) {
+            task_pool_.erase(task_id);
+        }
+
+        void removeAgentFromFreeSet(int agent_id) {
+            free_agents_.erase(agent_id);
+        }
+
+        void updateTaskPool(const std::vector<int>& new_tasks) {
+            for (int task_id : new_tasks) {
+                task_pool_.insert(task_id);
+            }
+        }
+
+        void updateFreeAgents(const std::vector<int>& new_freeagents) {
+            for (int agent_id : new_freeagents) {
+                free_agents_.insert(agent_id);
+            }
         }
 
     private:

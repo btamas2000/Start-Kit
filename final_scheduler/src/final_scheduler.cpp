@@ -6,27 +6,29 @@
 #include <iostream>
 
 static const int LARGE_COST = 10000000; // avoid INT_MAX arithmetic issues
+static const bool DEADLINE_AWARE_SCHEDULING = false; // enable deadline aware scheduling
+static const int TIGHT_DEADLINE_THRESHOLD = 10; // if naive expectation is within this threshold of deadline, consider it tight
 
-// Distance calculation between two locations using heuristic table
+// distance calculation between two locations using heuristics
 static int get_heuristic_distance(int loc1, int loc2, int rows, int cols) {
-    auto& prep = PreprocessingPipeline::PreprocessPipeline::getInstance();
-
-    int c1 = prep.getClusterId(loc1);
-    int c2 = prep.getClusterId(loc2);
+    int c1 = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getClusterId(loc1);
+    int c2 = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getClusterId(loc2);
 
     if (c1 == -1 || c2 == -1) {
+        std::cout << "Error: Location not in any cluster in get_heuristic_distance." << std::endl;
         return LARGE_COST; // unreachable
     }
 
-    int a1 = prep.getAreaId(loc1);
-    int a2 = prep.getAreaId(loc2);
+    int a1 = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getAreaId(loc1);
+    int a2 = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getAreaId(loc2);
 
     if (a1 != a2) {
+        std::cout << "Error: Locations not in the same area in get_heuristic_distance." << std::endl;
         return LARGE_COST; // unreachable
     }
 
     if (c1 == c2) {
-        // manhattan
+        // manhattan distance
         return (std::abs((loc1 / cols) - (loc2 / cols)) + std::abs((loc1 % cols) - (loc2 % cols)));
     }
 
@@ -37,29 +39,29 @@ static int get_heuristic_distance(int loc1, int loc2, int rows, int cols) {
     // get all combinations of portals in start and goal clusters
     // find minimum distance combination
 
-    const std::vector<PreprocessingPipeline::Cluster>& clusters = prep.getClusters();
+    const std::vector<PreprocessingPipeline::Cluster>& clusters = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getClusters();
     const PreprocessingPipeline::Cluster& start_cluster = clusters[c1];
     const PreprocessingPipeline::Cluster& goal_cluster = clusters[c2];
 
-    const std::vector<PreprocessingPipeline::Portal>& portals = prep.getPortals();
+    const std::vector<PreprocessingPipeline::Portal>& portals = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortals();
 
     std::vector<int> estimates;
 
     for (int i = start_cluster.portal_begin; i <= start_cluster.portal_end; i++) {
         const PreprocessingPipeline::Portal& start_portal = portals[i];
         // chose middle of portal cells as entry point
-        int start_portal_loc = prep.getPortalCells()[start_portal.cells_begin + start_portal.size / 2];
+        int start_portal_loc = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortalCells()[start_portal.cells_begin + start_portal.size / 2];
         int dist_to_start_portal = (std::abs((loc1 / cols) - (start_portal_loc / cols)) + std::abs((loc1 % cols) - (start_portal_loc % cols)));
         for (int j = goal_cluster.portal_begin; j <= goal_cluster.portal_end; j++) {
             const PreprocessingPipeline::Portal& goal_portal = portals[j];
-            int goal_portal_loc = prep.getPortalCells()[goal_portal.cells_begin + goal_portal.size / 2];
+            int goal_portal_loc = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortalCells()[goal_portal.cells_begin + goal_portal.size / 2];
             int dist_from_goal_portal = (std::abs((goal_portal_loc / cols) - (loc2 / cols)) + std::abs((goal_portal_loc % cols) - (loc2 % cols)));
             // get inter-cluster heuristic between start_portal and goal_portal
             int inter_cluster_heuristic = 0;
             if (start_portal.id != goal_portal.id) {
                 // distance from start_portal to goal_portal: (goal_portal.id * total_portals + start_portal.id)
                 int index = goal_portal.id * portals.size() + start_portal.id;
-                inter_cluster_heuristic = prep.getInterClusterHeuristics()[index];
+                inter_cluster_heuristic = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getInterClusterHeuristics()[index];
             }
 
             int total_estimate = dist_to_start_portal + inter_cluster_heuristic + dist_from_goal_portal;
@@ -78,10 +80,10 @@ static int get_heuristic_distance(int loc1, int loc2, int rows, int cols) {
     return total_distance;
 }
 
-// Estimate when a busy agent will finish their current task using cluster heuristics
-static int estimate_agent_finish_time(const DynamicData::Agent& agent, int current_timestep) {
+// estimate when a busy agent will finish their current task using cluster heuristics
+static int estimate_agent_finish_time(DynamicData::Agent& agent, int current_timestep) {
     // if agent is free, return current time
-    int task_id = agent.getAssignedTaskId();
+    int task_id = agent.getAssignedTaskID();
     if (task_id == -1) return current_timestep;
 
     // otherwise check if agent has planned path to final goal of assigned task, if yes, return finish time
@@ -92,7 +94,7 @@ static int estimate_agent_finish_time(const DynamicData::Agent& agent, int curre
     if (shared_env->task_pool[task_id].locations.size() - 1 == shared_env->task_pool[task_id].idx_next_loc) { // next is final goal
         int goal_loc = shared_env->task_pool[task_id].locations.back();
 
-        const std::vector<DynamicData::LowLevelStep>& ll_plan = agent.getLowLevelPlan();
+        std::vector<DynamicData::LowLevelStep>& ll_plan = agent.getLowLevelPlan();
 
         if (ll_plan.empty()) {
             return LARGE_COST; // no plan
@@ -100,7 +102,7 @@ static int estimate_agent_finish_time(const DynamicData::Agent& agent, int curre
 
         for (int i = 0; i < ll_plan.size(); i++) {
             if (ll_plan[i].location == goal_loc) { // found plan to final goal
-                return ll_plan[i].timestep;
+                return ll_plan[i].t;
             }
         }
 
@@ -111,25 +113,51 @@ static int estimate_agent_finish_time(const DynamicData::Agent& agent, int curre
     }
 }
 
-// Compute cost for assigning agent to task
+// compute cost for assigning agent to task
 static int compute_cost(int start_loc,  SharedEnvironment* shared_env, int task_id, int current_timestep) {
     std::vector<int> goal_locs = shared_env->task_pool[task_id].locations;
 
     int cost = 0;
+    int start_loc_copy = start_loc;
 
     for (int loc : goal_locs) {
-        int dist = get_heuristic_distance(start_loc, loc, shared_env->rows, shared_env->cols);
+        int dist = get_heuristic_distance(start_loc_copy, loc, shared_env->rows, shared_env->cols);
         if (dist >= LARGE_COST) {
             return LARGE_COST;
         }
         cost += dist;
-        start_loc = loc;
+        start_loc_copy = loc;
     }
 
     return cost;
 }
 
-// Build cost matrix
+static int apply_deadline_modifier(int task_id, int base_cost, SharedEnvironment* shared_env) {
+    if (!DEADLINE_AWARE_SCHEDULING) {
+        return base_cost;
+    }
+
+    if (base_cost >= LARGE_COST) { // unreachable
+        return base_cost;
+    }
+
+    const Task& task = shared_env->task_pool[task_id];
+    if (task.t_deadline < 0) { // no deadline
+        return base_cost;
+    }
+
+    if (base_cost < task.t_deadline - TIGHT_DEADLINE_THRESHOLD) { // comfortably within deadline
+        return base_cost * 100; // deprioritize
+    }
+
+    if (base_cost < task.t_deadline && base_cost >= task.t_deadline - TIGHT_DEADLINE_THRESHOLD) { // meets deadline but tightly
+        return base_cost * 10; // slight deprioritization
+    }
+
+    return base_cost; // slacking
+}
+
+// build cost matrix
 static std::vector<std::vector<int>> build_cost_matrix(std::vector<int> agents, std::vector<int> delays, std::vector<int> starts, std::vector<int>& tasks, SharedEnvironment* shared_env, int current_timestep) {
     int n = (int)agents.size();
     int m = (int)tasks.size();
@@ -137,34 +165,36 @@ static std::vector<std::vector<int>> build_cost_matrix(std::vector<int> agents, 
     std::vector<std::vector<int>> cost_matrix(n, std::vector<int>(m, LARGE_COST));
 
     for (int i = 0; i < n; i++) {
-        int start_loc = starts[i];
         for (int j = 0; j < m; j++) {
-            int cost = compute_cost(start_loc, shared_env, tasks[j], current_timestep);
-            cost_matrix[i][j] = cost + delays[i]; // add delay cost for busy agents
-            j++;
+            int cost = compute_cost(starts[i], shared_env, tasks[j], current_timestep);
+            int final_cost = cost;
+            if (DEADLINE_AWARE_SCHEDULING) {
+                final_cost = apply_deadline_modifier(tasks[j], cost, shared_env);
+            }
+            cost_matrix[i][j] = final_cost + delays[i]; // add delay cost for busy agents
         }
     }
 
     return cost_matrix;
 }
 
-// Add dummy rows/columns to make the matrix square for Hungarian algorithm
+// add dummy rows/columns to make the matrix square for Hungarian algorithm
 static std::vector<std::vector<int>> pad_to_square(const std::vector<std::vector<int>>& cost_matrix) {
     if (cost_matrix.empty()) return cost_matrix;
-    
+
     int n = (int)cost_matrix.size();
     int m = (int)cost_matrix[0].size();
     int max_dim = std::max(n, m);
-    
+
     std::vector<std::vector<int>> padded(max_dim, std::vector<int>(max_dim, LARGE_COST));
-    
-    // Copy original costs
+
+    // copy original costs
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < m; j++) {
             padded[i][j] = cost_matrix[i][j];
         }
     }
-    
+
     return padded;
 }
 
@@ -176,7 +206,7 @@ void HungarianScheduler3::hun_schedule_initialize(int preprocess_time_limit, Sha
 static const int LOOKAHEAD_TIMESTEPS = 10; // consider agents finishing within this many timesteps (based on estimated finish times)
 static const double DEFER_THRESHOLD = 0.4; // reserve tasks when busy agents are this much better than free agents
 
-// Hungarian algorithm implementation (defined before hun_schedule_plan to avoid forward declaration)
+// Hungarian algorithm implementation
 static std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& cost_matrix)
 {
     int n = (int)cost_matrix.size();
@@ -232,44 +262,36 @@ static std::vector<int> HungarianAlgorithm(const std::vector<std::vector<int>>& 
 }
 
 void HungarianScheduler3::hun_schedule_plan(int time_limit, std::vector<int> & proposed_schedule, SharedEnvironment* env) {
-    auto& dyn_env = DynamicData::DynamicEnvironment::getInstance();
-
-    dyn_env.initializeLiveData(); // if its not the first timestep, this will return immediately
-    dyn_env.advanceTimeStep(); // advance internal time and update agents (if first timestep, this will do nothing)
-
     std::cout << "HungarianScheduler3: Scheduling at timestep " << env->curr_timestep << "\n";
+
+    DynamicData::DynamicEnvironment::getInstance().initializeLiveData(); // if its not the first timestep, this will return immediately
+    DynamicData::DynamicEnvironment::getInstance().advanceTimeStep(); // advance internal time and update agents (if first timestep, this will do nothing)
 
     // 1. prepare data
 
-    std::vector<DynamicData::Agent>& agents = dyn_env.getAgents();
+    std::vector<DynamicData::Agent>& agents = DynamicData::DynamicEnvironment::getInstance().getAgents();
 
     for (int i = 0; i < env->num_of_agents; ++i) {
         proposed_schedule[i] = -1; // default no assignment
     }
 
-    std::unordered_set<int> free_agents = dyn_env.getFreeAgents();
-    std::unordered_set<int> task_pool = dyn_env.getTaskPool();
+    DynamicData::DynamicEnvironment::getInstance().updateFreeAgents(env->new_freeagents);
+    DynamicData::DynamicEnvironment::getInstance().updateTaskPool(env->new_tasks);
 
-    for (int i = 0; i < env->new_freeagents.size(); ++i) {
-        free_agents.insert(env->new_freeagents[i]);
-    }
-
-    for (int i = 0; i < env->new_tasks.size(); ++i) {
-        task_pool.insert(env->new_tasks[i]);
-    }
-
+    std::unordered_set<int> free_agents = DynamicData::DynamicEnvironment::getInstance().getFreeAgents();
+    std::unordered_set<int> task_pool = DynamicData::DynamicEnvironment::getInstance().getTaskPool();
     std::vector<int> free_agents_list(free_agents.begin(), free_agents.end());
     std::vector<int> task_pool_list(task_pool.begin(), task_pool.end());
 
     int n = (int)free_agents_list.size();
     int m = (int)task_pool_list.size();
-    if (n == 0 || m == 0) return;
+    if (n == 0 || m == 0) return; // ??? is this right for the simulation? not sure
 
     std::vector<int> start_positions;
     std::vector<int> delays;
 
     for (int agent_id : free_agents_list) {
-        start_positions.push_back(dyn_env.getAgent(agent_id).getCurrentLocation());
+        start_positions.push_back(DynamicData::DynamicEnvironment::getInstance().getAgent(agent_id).getCurrentLocation());
         delays.push_back(0); // free agents have no delay
     }
 
@@ -290,7 +312,7 @@ void HungarianScheduler3::hun_schedule_plan(int time_limit, std::vector<int> & p
         
         if (time_until_free > 0 && time_until_free <= LOOKAHEAD_TIMESTEPS) {
             near_finish_agents.push_back(agent_id);
-            near_finish_starts.push_back(env->task_pool[agents[agent_id].getAssignedTaskId()].locations.back());
+            near_finish_starts.push_back(env->task_pool[agents[agent_id].getAssignedTaskID()].locations.back());
             near_finish_delays.push_back(time_until_free);
         }
     }
@@ -310,136 +332,73 @@ void HungarianScheduler3::hun_schedule_plan(int time_limit, std::vector<int> & p
         combined_delays.push_back(delay);
     }
 
-    // 3. if busy agents are significantly better for some tasks, defer those tasks
+    // 3. run Hungarian algorithm
 
-    std::vector<int> tasks_for_assignment = task_pool_list; // start with all tasks
-
-    if (!near_finish_agents.empty()) {
-        // Build a temporary cost matrix to evaluate which tasks near-finish agents would want
-        auto temp_cost_matrix = build_cost_matrix(combined_agents_list, combined_starts, combined_delays, task_pool_list, env, env->curr_timestep);
-        
-        // For each near-finish agent, find which task they'd prefer
-        for (int agent_id : near_finish_agents) {
-            // Find this agent's index in combined list
-            int agent_idx = -1;
-            for (int i = 0; i < (int)combined_agents_list.size(); ++i) {
-                if (combined_agents_list[i] == agent_id) {
-                    agent_idx = i;
-                    break;
-                }
-            }
-            
-            if (agent_idx == -1) continue;
-
-            // find the best task for this busy agent where it can do significantly better than free agents
-            // if not the best cost among busy agents though, dont reserve
-            std::vector<float> improvements(m, 0.0f); // improvement over other agents
-            std::vector<int> best_costs(m, 0);
-
-            for (int j = 0; j < m; ++j) {
-                int busy_agent_cost = temp_cost_matrix[agent_idx][j];
-
-                // find best cost among other agents
-                for (int k = 0; k < (int)combined_agents_list.size(); ++k) {
-                    if (k == agent_idx) continue;
-                    int other_cost = temp_cost_matrix[k][j];
-                    if (other_cost < LARGE_COST) {
-                        float improvement = (float)(other_cost - busy_agent_cost) / (float)other_cost;
-                        if (improvement > improvements[j]) {
-                            improvements[j] = improvement;
-                        }
-                    }
-                }
-            }
-            
-            // Find the best task for this busy agent
-            // int best_task_idx = -1;
-            // int best_cost = LARGE_COST;
-            // for (int j = 0; j < m; ++j) {
-            //     if (temp_cost_matrix[agent_idx][j] < best_cost) {
-            //         best_cost = temp_cost_matrix[agent_idx][j];
-            //         best_task_idx = j;
-            //     }
-            // }
-            
-            // if (best_task_idx >= 0 && best_cost < LARGE_COST) {
-            //     int task_id = task_pool_list[best_task_idx];
-                
-            //     // Check if this busy agent is significantly better than free agents
-            //     int best_free_cost = LARGE_COST;
-            //     for (int k = 0; k < (int)free_agents_list.size(); ++k) {
-            //         if (temp_cost_matrix[k][best_task_idx] < best_free_cost) {
-            //             best_free_cost = temp_cost_matrix[k][best_task_idx];
-            //         }
-            //     }
-                
-            //     // If busy agent is significantly better, exclude this task from current assignment
-            //     // This keeps the task available for when this agent becomes free
-            //     if (best_free_cost < LARGE_COST) {
-            //         double improvement = (double)(best_free_cost - best_cost) / (double)best_free_cost;
-                    
-            //         if (improvement > DEFER_THRESHOLD) {
-            //             // Exclude this task - it should wait for the busy agent
-            //             std::cerr << "Task" << task_id << " deferred for busy agent " << agent_idx << "\n";
-            //             tasks_for_assignment_set.erase(task_id);
-            //         }
-            //     }
-            // }
-        }
-    } else {
-        // No near-finish agents, use all free tasks
-        for (int task_id : task_pool) {
-            tasks_for_assignment_set.insert(task_id);
-        }
-    }
-
-    // 4. remove deferred tasks task pool
-
-    std::vector<int> agents_for_assignment = free_agents_list;
-    std::vector<int> tasks_for_assignment(tasks_for_assignment_set.begin(), tasks_for_assignment_set.end());
-    int filtered_m = (int)tasks_for_assignment.size();
-
-    // 5. rebuild cost matrix with only free agents and non-deferred tasks
-
-    std::vector<DynamicData::Agent> agents_for_assignment_vec;
-    for (int agent_id : agents_for_assignment) {
-        agents_for_assignment_vec.push_back(agents[agent_id]);
-    }
-
-    auto cost_matrix = build_cost_matrix(agents_for_assignment_vec, tasks_for_assignment_set, env, env->curr_timestep);
-
-    // 6. run Hungarian algorithm and assign tasks to free agents only
+    auto cost_matrix = build_cost_matrix(combined_agents_list, combined_delays, combined_starts, task_pool_list, env, env->curr_timestep);
 
     auto padded_matrix = pad_to_square(cost_matrix);
+
     auto assignment = HungarianAlgorithm(padded_matrix);
 
-    int assignment_n = (int)agents_for_assignment.size();
+    // 4. set proposed schedule based on assignment
 
-    // 7. set proposed schedule based on assignment
+    struct Assignment {
+        int agent_index;
+        int task_index;
+        int cost;
+    };
 
-    int global_prio = DynamicData::DynamicEnvironment::getInstance().getGlobalNextPriority();
+    std::vector<Assignment> assignments_made;
 
-    for (int i = 0; i < assignment_n; ++i) {
-        int task_index = (i < (int)assignment.size()) ? assignment[i] : -1;
-        if (task_index >= 0 && task_index < filtered_m) {
-            int agent_id = agents_for_assignment[i];
-            int task_id = tasks_for_assignment[task_index];
-
-            agents[agent_id].setAssignedTaskID(task_id);
-            agents[agent_id].setPriority(global_prio);
-            DynamicData::DynamicEnvironment::getInstance().incrementGlobalNextPriority();
-            
-            // Set the assignment and remove from persistent tracking
-            proposed_schedule[agent_id] = task_id;
-
-            free_agents.erase(agent_id);
-            task_pool.erase(task_id);
-            
-        } else {
-            // No assignment for this agent
-            int agent_id = agents_for_assignment[i];
-            proposed_schedule[agent_id] = -1;
-            // Keep agent in free_agents set for next round
+    for (int i = 0; i < assignment.size(); ++i) {
+        if (i < free_agents_list.size()) {
+            // free agent
+            auto it = std::find(task_pool_list.begin(), task_pool_list.end(), assignment[i]);
+            int task_index = -1;
+            if (it != task_pool_list.end()) {
+                task_index = it - task_pool_list.begin();
+            }
+            if (task_index != -1 && cost_matrix[i][task_index] < LARGE_COST) {
+                assignments_made.push_back({i, task_index, cost_matrix[i][task_index]});
+                proposed_schedule[free_agents_list[i]] = task_pool_list[task_index];
+                agents[free_agents_list[i]].assignTask(assignment[i]);
+                DynamicData::DynamicEnvironment::getInstance().removeAgentFromFreeSet(free_agents_list[i]);
+                DynamicData::DynamicEnvironment::getInstance().removeTaskFromPool(assignment[i]);
+            } else {
+                assignments_made.push_back({i, -1, LARGE_COST});
+                proposed_schedule[i] = -1;
+            }
         }
     }
+
+    // 5. assign priorities based on costs
+    // lower cost assignments get higher priority
+
+    std::sort(assignments_made.begin(), assignments_made.end(), [](const Assignment& a, const Assignment& b) {
+        if (a.cost < LARGE_COST && b.cost < LARGE_COST) {
+            return a.cost < b.cost;
+        } else if (a.cost < LARGE_COST) {
+            return true;
+        } else if (b.cost < LARGE_COST) {
+            return false;
+        } else {
+            return false;
+        }
+    });
+
+    for (int i = 0; i < assignments_made.size(); ++i) {
+        int prio = DynamicData::DynamicEnvironment::getInstance().getGlobalNextPriority();
+        agents[assignments_made[i].agent_index].setPriority(prio);
+        DynamicData::DynamicEnvironment::getInstance().setGlobalNextPriority(prio + 1);
+    }
+
+    // debug
+    // std::cout << "HungarianScheduler3: Scheduling Complete.\n";
+    // for (int i = 0; i < proposed_schedule.size(); ++i) {
+    //     if (proposed_schedule[i] != -1) {
+    //         std::cout << "  Agent " << i << " assigned to Task " << proposed_schedule[i] << "\n";
+    //     } else {
+    //         std::cout << "  Agent " << i << " not assigned\n";
+    //     }
+    // }
 }

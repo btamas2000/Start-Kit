@@ -1114,9 +1114,9 @@ namespace PreprocessingPipeline {
             }
         }
 
-        for (Portal& portal : updatedPortals) {
-            std::cout << "Portal " << portal.id << " intra-cluster heuristic range: " << portal.intra_h_begin << " to " << portal.intra_h_end << std::endl;
-        }
+        // for (Portal& portal : updatedPortals) {
+        //     std::cout << "Portal " << portal.id << " intra-cluster heuristic range: " << portal.intra_h_begin << " to " << portal.intra_h_end << std::endl;
+        // }
 
         portals_ = std::move(updatedPortals);
         intraClusterHeuristics_ = std::move(intraClusterHeuristics);
@@ -1198,7 +1198,7 @@ namespace PreprocessingPipeline {
 
         interClusterHeuristics_ = std::move(interClusterHeuristics);
 
-        std::cout << "Inter-cluster heuristics size: " << interClusterHeuristics_.size() << std::endl;
+        // std::cout << "Inter-cluster heuristics size: " << interClusterHeuristics_.size() << std::endl;
 
         for (Portal& portal : updatedPortals) {
             portal.inter_h_begin = portal.id * updatedPortals.size();
@@ -1212,7 +1212,7 @@ namespace PreprocessingPipeline {
         // Implementation for computing projection base for clusters
 
         projectionBase_.clear();
-        std::vector<int> projectionBase(clusters_.size(), -1);
+        std::vector<int> projectionBase(rows_ * cols_, -1);
 
         const int dr[] = {-1, 1, 0, 0};
         const int dc[] = {0, 0, -1, 1};
@@ -1413,30 +1413,31 @@ namespace PreprocessingPipeline {
 
         if (preprocessing_done_) return;
 
-        std::cout << "Starting preprocessing..." << std::endl;
-        std::cout << "Identifying distinct areas..." << std::endl;
+        // std::cout << "Starting preprocessing..." << std::endl;
+        // std::cout << "Identifying distinct areas..." << std::endl;
         identifyDistinctAreas();
-        std::cout << "Computing distance transform..." << std::endl;
+        // std::cout << "Computing distance transform..." << std::endl;
         computeDistanceTransform();
-        std::cout << "Finding local maximas..." << std::endl;
+        // std::cout << "Finding local maximas..." << std::endl;
         findLocalMaximas();
-        std::cout << "Forming initial clusters..." << std::endl;
+        // std::cout << "Forming initial clusters..." << std::endl;
         formInitialClusters();
-        std::cout << "Clustering DT1 cells..." << std::endl;
+        // std::cout << "Clustering DT1 cells..." << std::endl;
         clusterDT1Cells(MINIMUM_DT1_CLUSTER_SIZE);
-        std::cout << "Assigning leftover cells..." << std::endl;
+        // std::cout << "Assigning leftover cells..." << std::endl;
         assignLeftoverCells();
-        std::cout << "Updating neighbors..." << std::endl;
+        // std::cout << "Updating neighbors..." << std::endl;
         updateNeighbors();
-        std::cout << "Updating portals..." << std::endl;
+        // std::cout << "Updating portals..." << std::endl;
         updatePortals();
-        std::cout << "Computing portal distances..." << std::endl;
+        // std::cout << "Computing portal distances..." << std::endl;
         computePortalDistances();
-        std::cout << "Computing intra-cluster shortest paths..." << std::endl;
+        // std::cout << "Computing intra-cluster shortest paths..." << std::endl;
         computeIntraClusterShortestPaths();
-        std::cout << "Computing inter-cluster heuristics..." << std::endl;
+        // std::cout << "Computing inter-cluster heuristics..." << std::endl;
         computeInterClusterHeuristics();
-        std::cout << "Preprocessing completed." << std::endl;
+        // std::cout << "Preprocessing completed." << std::endl;
+        computeProjectionBase();
         preprocessing_done_ = true;
 
         if (DEBUG_PREPROCESSING) {

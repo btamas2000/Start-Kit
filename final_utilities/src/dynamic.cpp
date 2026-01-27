@@ -33,15 +33,6 @@ namespace DynamicData {
         ll_planned_until = static_cast<int>(plan.size()) - 1;
     }
 
-    const std::vector<LowLevelStep>& getLowLevelPlanFromIndex() const {
-        if (ll_step_index < 0 || ll_step_index >= static_cast<int>(lowLevelPlan.size())) {
-            std::vector<LowLevelStep> empty_plan;
-            empty_plan.clear();
-            return empty_plan;
-        }
-        return std::vector<LowLevelStep>(lowLevelPlan.begin() + ll_step_index, lowLevelPlan.end());
-    }
-
     void Agent::extendLowLevelPlan(const std::vector<LowLevelStep>& additional_steps, bool placeholder_extension) {
         for (const auto& step : additional_steps) {
             lowLevelPlan.emplace_back(step);
@@ -58,15 +49,21 @@ namespace DynamicData {
 
         ll_step_index += 1;
 
-        const LowLevelStep& step = lowLevelPlan[ll_step_index];
+        LowLevelStep& step = lowLevelPlan[ll_step_index];
         currentLocation = step.location;
         currentOrientation = step.orientation;
         hl_step_index = step.hl_step_index;
     }
 
+    void Agent::assignTask(int task_id) {
+        assigned_task_id = task_id;
+        lowLevelReplanNeeded = true;
+        highLevelReplanNeeded = true;
+    }
+
     const std::pair<bool, LowLevelStep> Agent::getCurrentLowLevelStep() const {
         if (ll_step_index < 0 || ll_step_index >= static_cast<int>(lowLevelPlan.size())) {
-            return {false, LowLevelStep{-1, -1, -1, Action::W, -1}};
+            return {false, LowLevelStep(-1, -1, -1, Action::W, false, -1)};
         } else {
             return {true, lowLevelPlan[ll_step_index]};
         }
@@ -192,82 +189,82 @@ namespace DynamicData {
         rows_ = rows;
         cols_ = cols;
 
-        table_.resize(window_size_ * map_base_.size(), 0x00);
+        table_.resize(window_size_ * rows_ * cols_, 0x00);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] == -1) { // obstacle
-                    table_[w * map_base_.size() + i] = OBS_STATIC; // hard reserved
+                    table_[w * rows_ * cols_ + i] = OBS_STATIC; // hard reserved
                 }
             }
         }
 
-        edge_table_.resize(window_size_ * map_base_.size(), 0x00);
+        edge_table_.resize(window_size_ * rows_ * cols_, 0x00);
 
-        soft_reservations_.resize(window_size_ * map_base_.size(), -1);
+        soft_reservations_.resize(window_size_ * rows_ * cols_, -1);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] != -1) { // not obstacle
-                    soft_reservations_[w * map_base_.size() + i] = 0;
+                    soft_reservations_[w * rows_ * cols_ + i] = 0;
                 }
             }
         }
         
-        proj_east_.resize(window_size_ * map_base_.size(), -1);
+        proj_east_.resize(window_size_ * rows_ * cols_, -1);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] != -1) { // not obstacle
-                    proj_east_[w * map_base_.size() + i] = 0;
+                    proj_east_[w * rows_ * cols_ + i] = 0;
                 }
             }
         }
 
-        proj_south_.resize(window_size_ * map_base_.size(), -1);
+        proj_south_.resize(window_size_ * rows_ * cols_, -1);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] != -1) { // not obstacle
-                    proj_south_[w * map_base_.size() + i] = 0;
+                    proj_south_[w * rows_ * cols_ + i] = 0;
                 }
             }
         }
 
-        proj_west_.resize(window_size_ * map_base_.size(), -1);
+        proj_west_.resize(window_size_ * rows_ * cols_, -1);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] != -1) { // not obstacle
-                    proj_west_[w * map_base_.size() + i] = 0;
+                    proj_west_[w * rows_ * cols_ + i] = 0;
                 }
             }
         }
 
-        proj_north_.resize(window_size_ * map_base_.size(), -1);
+        proj_north_.resize(window_size_ * rows_ * cols_, -1);
 
         for (int w = 0; w < window_size_; w++) {
-            for (size_t i = 0; i < map_base_.size(); i++) {
+            for (size_t i = 0; i < rows_ * cols_; i++) {
                 if (map_base_[i] != -1) { // not obstacle
-                    proj_north_[w * map_base_.size() + i] = 0;
+                    proj_north_[w * rows_ * cols_ + i] = 0;
                 }
             }
         }
     }
 
     bool ReservationTable::isCellFree(int location, int timestep) {
-        int index = (timestep % window_size_) * map_base_.size() + location;
+        int index = (timestep % window_size_) * rows_ * cols_ + location;
         // free if no static or hard reservation
         return (table_[index] & (OBS_STATIC | RES_HARD)) == 0;
     }
 
     bool ReservationTable::isCellSoftReserved(int location, int timestep) {
-        int index = (timestep % window_size_) * map_base_.size() + location;
+        int index = (timestep % window_size_) * rows_ * cols_ + location;
         return (table_[index] & RES_SOFT) != 0;
     }
 
     Projections ReservationTable::getProjections(int location, int timestep) {
-        int index = (timestep % window_size_) * map_base_.size() + location;
+        int index = (timestep % window_size_) * rows_ * cols_ + location;
         Projections projections;
         projections.projected_east = (table_[index] & DIR_EAST) != 0;
         projections.projected_south = (table_[index] & DIR_SOUTH) != 0;
@@ -279,9 +276,10 @@ namespace DynamicData {
     void ReservationTable::reservePath(std::vector<LowLevelStep>& path) {
         // not validating path correctness nor if it surpasses window size, just reserve
         // assuming valid path is given
+
         for (int i = 0; i < static_cast<int>(path.size()); i++) {
             const LowLevelStep& step = path[i];
-            int index = (step.t % window_size_) * map_base_.size() + step.location;
+            int index = (step.t % window_size_) * rows_ * cols_ + step.location;
 
             if (step.placeholder_step) {
                 table_[index] |= RES_SOFT;
@@ -294,7 +292,7 @@ namespace DynamicData {
             // update edge reservations if needed
             if (path[i].nextAction == Action::FW && i + 1 < static_cast<int>(path.size())) {
                 const LowLevelStep& next_step = path[i + 1];
-                int next_index = (next_step.t % window_size_) * edge_table_.size() + next_step.location;
+                int next_index = (next_step.t % window_size_) * rows_ * cols_ + next_step.location;
 
                 int direction = next_step.location - step.location;
                 if (direction == 1) {
@@ -321,7 +319,8 @@ namespace DynamicData {
 
             while (can_project && j < static_cast<int>(path.size())) {
                 const LowLevelStep& next_step = path[j];
-                int next_index = (next_step.t % window_size_) * table_.size() + next_step.location;
+                // int next_index = (step.t % window_size_) * table_.size() + next_step.location;     // intentional seg fault
+                int next_index = (step.t % window_size_) * rows_ * cols_ + next_step.location;
 
                 if (next_step.placeholder_step) {
                     can_project = false;
@@ -338,19 +337,19 @@ namespace DynamicData {
                 int direction = next_step.location - step.location;
                 if (direction == 1) {
                     // east
-                    proj_east_[index]++;
+                    proj_east_[next_index]++;
                     table_[next_index] |= DIR_EAST;
                 } else if (direction == -1) {
                     // west
-                    proj_west_[index]++;
+                    proj_west_[next_index]++;
                     table_[next_index] |= DIR_WEST;
                 } else if (direction == cols_) {
                     // south
-                    proj_south_[index]++;
+                    proj_south_[next_index]++;
                     table_[next_index] |= DIR_SOUTH;
                 } else if (direction == -cols_) {
                     // north
-                    proj_north_[index]++;
+                    proj_north_[next_index]++;
                     table_[next_index] |= DIR_NORTH;
                 } else {
                     // non-adjacent move, stop projecting
@@ -367,12 +366,12 @@ namespace DynamicData {
         }
     }
 
-    void ReservationTable::releasePath(std::vector<LowLevelStep>& path) {
+    void ReservationTable::releasePath(const std::vector<LowLevelStep>& path) {
         // not validating path correctness nor if it surpasses window size, just release
         // assuming valid path is given
         for (int i = 0; i < static_cast<int>(path.size()); i++) {
             const LowLevelStep& step = path[i];
-            int index = (step.t % window_size_) * table_.size() + step.location;
+            int index = (step.t % window_size_) * rows_ * cols_ + step.location;
 
             if (step.placeholder_step) {
                 if (soft_reservations_[index] > 0) {
@@ -380,6 +379,29 @@ namespace DynamicData {
                 }
                 if (soft_reservations_[index] == 0) {
                     table_[index] &= ~RES_SOFT;
+                }
+            } else {
+                table_[index] &= ~RES_HARD;
+            }
+
+            // remove edge reservations
+            if (step.nextAction == Action::FW && i + 1 < static_cast<int>(path.size())) {
+                const LowLevelStep& next_step = path[i + 1];
+                int next_index = (next_step.t % window_size_) * rows_ * cols_ + next_step.location;
+
+                int direction = next_step.location - step.location;
+                if (direction == 1) {
+                    // east
+                    edge_table_[index] &= ~MOVE_EAST;
+                } else if (direction == -1) {
+                    // west
+                    edge_table_[index] &= ~MOVE_WEST;
+                } else if (direction == cols_) {
+                    // south
+                    edge_table_[index] &= ~MOVE_SOUTH;
+                } else if (direction == -cols_) {
+                    // north
+                    edge_table_[index] &= ~MOVE_NORTH;
                 }
             }
 
@@ -389,7 +411,7 @@ namespace DynamicData {
 
             while (can_unproject && j < static_cast<int>(path.size())) {
                 const LowLevelStep& next_step = path[j];
-                int next_index = (next_step.t % window_size_) * table_.size() + next_step.location;
+                int next_index = (step.t % window_size_) * rows_ * cols_ + next_step.location;
 
                 if (next_step.placeholder_step) {
                     can_unproject = false;
@@ -406,34 +428,34 @@ namespace DynamicData {
                 int direction = next_step.location - step.location;
                 if (direction == 1) {
                     // east
-                    if (proj_east_[index] > 0) {
-                        proj_east_[index]--;
+                    if (proj_east_[next_index] > 0) {
+                        proj_east_[next_index]--;
                     }
-                    if (proj_east_[index] == 0) {
+                    if (proj_east_[next_index] == 0) {
                         table_[next_index] &= ~DIR_EAST;
                     }
                 } else if (direction == -1) {
                     // west
-                    if (proj_west_[index] > 0) {
-                        proj_west_[index]--;
+                    if (proj_west_[next_index] > 0) {
+                        proj_west_[next_index]--;
                     }
-                    if (proj_west_[index] == 0) {
+                    if (proj_west_[next_index] == 0) {
                         table_[next_index] &= ~DIR_WEST;
                     }
                 } else if (direction == cols_) {
                     // south
-                    if (proj_south_[index] > 0) {
-                        proj_south_[index]--;
+                    if (proj_south_[next_index] > 0) {
+                        proj_south_[next_index]--;
                     }
-                    if (proj_south_[index] == 0) {
+                    if (proj_south_[next_index] == 0) {
                         table_[next_index] &= ~DIR_SOUTH;
                     }
                 } else if (direction == -cols_) {
                     // north
-                    if (proj_north_[index] > 0) {
-                        proj_north_[index]--;
+                    if (proj_north_[next_index] > 0) {
+                        proj_north_[next_index]--;
                     }
-                    if (proj_north_[index] == 0) {
+                    if (proj_north_[next_index] == 0) {
                         table_[next_index] &= ~DIR_NORTH;
                     }
                 } else {
@@ -451,166 +473,13 @@ namespace DynamicData {
         }
     }
 
-    void ReservationTable::extendPathReservation(const LowLevelStep& last_step, std::vector<LowLevelStep>& path) {
-        // same as reservePath but starting from last_step
-        // complete projection for the last step
-        if (path.empty()) return;
+    void ReservationTable::extendPathReservation(const LowLevelStep& extension_step) {
+        // extending reservation with placeholder step
 
-        bool initial_can_project = true;
-        const LowLevelStep& initial_next_step = path[0];
-        int initial_index = (last_step.t % window_size_) * table_.size() + last_step.location;
-        int initial_next_index = (initial_next_step.t % window_size_) * table_.size() + initial_next_step.location;
-        int initial_last_location = last_step.location;
+        int index = (extension_step.t % window_size_) * rows_ * cols_ + extension_step.location;
 
-        while (initial_can_project) {
-            if (initial_next_step.placeholder_step) {
-                initial_can_project = false;
-                continue;
-            }
-
-            if (initial_next_step.location == initial_last_location) {
-                // same location, no projection
-                initial_can_project = false;
-                continue;
-            }
-
-            // determine move direction
-            int direction = initial_next_step.location - initial_last_location;
-
-            if (direction == 1) {
-                // east
-                proj_east_[initial_index]++;
-                table_[initial_next_index] |= DIR_EAST;
-            } else if (direction == -1) {
-                // west
-                proj_west_[initial_index]++;
-                table_[initial_next_index] |= DIR_WEST;
-            } else if (direction == cols_) {
-                // south
-                proj_south_[initial_index]++;
-                table_[initial_next_index] |= DIR_SOUTH;
-            } else if (direction == -cols_) {
-                // north
-                proj_north_[initial_index]++;
-                table_[initial_next_index] |= DIR_NORTH;
-            } else {
-                // non-adjacent move, stop projecting
-                initial_can_project = false;
-            }
-
-            if (map_base_[initial_next_step.location] != 1) {
-                // cannot project further based on static geometry
-                initial_can_project = false;
-            }
-        }
-
-        // update edge reservation if needed
-        if (last_step.nextAction == Action::FW) {
-            const LowLevelStep& next_step = path[0];
-            int next_index = (next_step.t % window_size_) * edge_table_.size() + next_step.location;
-
-            int direction = next_step.location - last_step.location;
-            if (direction == 1) {
-                // east
-                edge_table_[initial_index] |= MOVE_EAST;
-            } else if (direction == -1) {
-                // west
-                edge_table_[initial_index] |= MOVE_WEST;
-            } else if (direction == cols_) {
-                // south
-                edge_table_[initial_index] |= MOVE_SOUTH;
-            } else if (direction == -cols_) {
-                // north
-                edge_table_[initial_index] |= MOVE_NORTH;
-            }
-        }
-
-        for (int i = 0; i < static_cast<int>(path.size()); i++) {
-            const LowLevelStep& step = path[i];
-            int index = (step.t % window_size_) * table_.size() + step.location;
-
-            if (step.placeholder_step) {
-                table_[index] |= RES_SOFT;
-                soft_reservations_[index]++;
-                continue;
-            }
-
-            reservation_table_[index] |= RES_HARD;
-
-            // update edge reservations if needed
-            if (path[i].nextAction == Action::FW && i + 1 < static_cast<int>(path.size())) {
-                const LowLevelStep& next_step = path[i + 1];
-                int next_index = (next_step.t % window_size_) * edge_table_.size() + next_step.location;
-
-                int direction = next_step.location - step.location;
-                if (direction == 1) {
-                    // east
-                    edge_table_[index] |= MOVE_EAST;
-                } else if (direction == -1) {
-                    // west
-                    edge_table_[index] |= MOVE_WEST;
-                } else if (direction == cols_) {
-                    // south
-                    edge_table_[index] |= MOVE_SOUTH;
-                } else if (direction == -cols_) {
-                    // north
-                    edge_table_[index] |= MOVE_NORTH;
-                }
-            }
-
-            // update projections for timestep t
-            // base case: project the next move
-            // advanced case: based on static geometry, if projectable further (map_base_[idx] == 1), project further
-
-            int j = i + 1;
-            bool can_project = true;
-
-            while (can_project && j < static_cast<int>(path.size())) {
-                const LowLevelStep& next_step = path[j];
-                int next_index = (next_step.t % window_size_) * table_.size() + next_step.location;
-
-                if (next_step.placeholder_step) {
-                    can_project = false;
-                    continue;
-                }
-
-                if (next_step.location == step.location) {
-                    // same location, no projection
-                    can_project = false;
-                    continue;
-                }
-
-                // determine move direction
-                int direction = next_step.location - step.location;
-                if (direction == 1) {
-                    // east
-                    proj_east_[index]++;
-                    table_[next_index] |= DIR_EAST;
-                } else if (direction == -1) {
-                    // west
-                    proj_west_[index]++;
-                    table_[next_index] |= DIR_WEST;
-                } else if (direction == cols_) {
-                    // south
-                    proj_south_[index]++;
-                    table_[next_index] |= DIR_SOUTH;
-                } else if (direction == -cols_) {
-                    // north
-                    proj_north_[index]++;
-                    table_[next_index] |= DIR_NORTH;
-                } else {
-                    // non-adjacent move, stop projecting
-                    can_project = false;
-                }
-
-                if (map_base_[next_step.location] != 1) {
-                    // cannot project further based on static geometry
-                    can_project = false;
-                }
-
-                j++;
-            }
-        }
+        table_[index] |= RES_SOFT;
+        soft_reservations_[index]++;
     }
 
     void ReservationTable::advanceTable(int current_time) {
@@ -619,12 +488,13 @@ namespace DynamicData {
 
         int entry_to_switch = (current_time - 1) % window_size_;
 
-        for (int i = 0; i < static_cast<int>(map_base_.size()); i++) {
-            int index = entry_to_switch * map_base_.size() + i;
-            reservation_table_[index] = 0x00;
+        for (int i = 0; i < static_cast<int>(rows_ * cols_); i++) {
+            int index = entry_to_switch * rows_ * cols_ + i;
+            table_[index] = 0x00;
+            edge_table_[index] = 0x00;
 
             if (map_base_[i] == -1) { // obstacle
-                reservation_table_[index] = OBS_STATIC; // hard reserved
+                table_[index] = OBS_STATIC; // hard reserved
             }
 
             soft_reservations_[index] = 0;
@@ -637,12 +507,103 @@ namespace DynamicData {
     }
 
     uint8_t ReservationTable::getEdgeReservations(int location, int timestep) {
-        int index = (timestep % window_size_) * edge_table_.size() + location;
+        int index = (timestep % window_size_) * rows_ * cols_ + location;
         return edge_table_[index];
     }
 
+    void ReservationTable::printTablesAtTimestep(int timestep) {
+        // print reservation table first
+        int index_offset = (timestep % window_size_) * rows_ * cols_;
+        for (int i = 0; i < rows_ * cols_; i++) {
+            if (table_[index_offset + i] & OBS_STATIC) {
+                std::cout << "X";
+            } else if (table_[index_offset + i] & RES_HARD) {
+                std::cout << "A";
+            } else if (table_[index_offset + i] & RES_SOFT) {
+                std::cout << "S";
+            } else {
+                std::cout << ".";
+            }
+            if ((i + 1) % cols_ == 0 && i != 0) {
+                std::cout << "\n";
+            }
+        }
+
+        std::cout << "----\n";
+
+        // print edge reservation table
+        for (int i = 0; i < rows_ * cols_; i++) {
+            uint8_t edge_res = edge_table_[index_offset + i];
+            if (table_[index_offset + i] & OBS_STATIC) {
+                std::cout << "X";
+            } else if (edge_res & MOVE_NORTH) {
+                std::cout << "A";
+            } else if (edge_res & MOVE_SOUTH) {
+                std::cout << "v";
+            } else if (edge_res & MOVE_EAST) {
+                std::cout << ">";
+            } else if (edge_res & MOVE_WEST) {
+                std::cout << "<";
+            } else {
+                std::cout << ".";
+            }
+            if ((i + 1) % cols_ == 0 && i != 0) {
+                std::cout << "\n";
+            }
+        }
+
+        std::cout << "====\n";
+
+        // print projections
+        // since multiple projections can exist at the same cell, we use codes:
+        // . = none
+        // E = east only
+        // S = south only
+        // W = west only
+        // N = north only
+        // M = multiple directions
+        // X = obstacle
+        for (int i = 0; i < rows_ * cols_; i++) {
+            bool east = proj_east_[index_offset + i] > 0;
+            bool south = proj_south_[index_offset + i] > 0;
+            bool west = proj_west_[index_offset + i] > 0;
+            bool north = proj_north_[index_offset + i] > 0;
+
+            int count = static_cast<int>(east) + static_cast<int>(south) + static_cast<int>(west) + static_cast<int>(north);
+
+            if (proj_east_[index_offset + i] == -1) {
+                std::cout << "X";
+            } else if (count == 0) {
+                std::cout << ".";
+            } else if (count > 1) {
+                std::cout << "M";
+            } else {
+                if (east) {
+                    std::cout << "E";
+                } else if (south) {
+                    std::cout << "S";
+                } else if (west) {
+                    std::cout << "W";
+                } else if (north) {
+                    std::cout << "N";
+                } 
+            }
+
+            if ((i + 1) % cols_ == 0 && i != 0) {
+                std::cout << "\n";
+            }
+        }
+
+        std::cout << "====\n";
+    }
+
     void DynamicEnvironment::initialize(SharedEnvironment* shared_env) {
-        if (initialized_) return;
+        if (initialized_) {
+            std::cout << "Dynamic Environment already initialized. Skipping re-initialization." << std::endl;
+            return;
+        }
+
+        std::cout << "Initializing Dynamic Environment..." << std::endl;
 
         shared_env_ = shared_env;
 
@@ -670,6 +631,7 @@ namespace DynamicData {
         congestion_tracker_.initialize(num_portals, num_clusters);
 
         initialized_ = true;
+        std::cout << "Dynamic Environment Initialization Complete." << std::endl;
     }
 
     DynamicEnvironment::DynamicEnvironment() {
@@ -682,15 +644,15 @@ namespace DynamicData {
 
         shared_env_ = nullptr;
 
+        agents_.clear();
         free_agents_.clear();
         task_pool_.clear();
-
-        reservation_table_ = ReservationTable();
-        congestion_tracker_ = CongestionTracker();
     }
 
     void DynamicEnvironment::initializeLiveData() {
         if (initialized_live_data_) return;
+
+        std::cout << "Initializing Dynamic Environment Live Data at Timestep 0..." << std::endl;
 
         if (shared_env_->curr_timestep != 0) return; // live data can only be initialized at timestep 0
 
@@ -702,7 +664,7 @@ namespace DynamicData {
             LowLevelStep first_step(0, shared_env_->curr_states[i].location, shared_env_->curr_states[i].orientation, Action::NA, false, -1);
             std::vector<LowLevelStep> initial_plan;
             initial_plan.emplace_back(first_step);
-            for (int t = 1; t < window_size_; t++) {
+            for (int t = 1; t < PLANNING_HORIZON; t++) {
                 LowLevelStep placeholder_step(t, shared_env_->curr_states[i].location, shared_env_->curr_states[i].orientation, Action::NA, true, -1);
                 initial_plan.emplace_back(placeholder_step);
             }
@@ -747,7 +709,8 @@ namespace DynamicData {
                 return false;
             }
 
-            if (current_step.second.location != shared_env_->curr_states[i].location ||
+            if (current_step.second.placeholder_step ||
+                current_step.second.location != shared_env_->curr_states[i].location ||
                 current_step.second.orientation != shared_env_->curr_states[i].orientation) {
                 // agent did not move as expected, trigger replanning
                 agents_[i].setHighLevelReplanNeeded(true);
@@ -756,7 +719,12 @@ namespace DynamicData {
                 std::cout << "Warning: Agent " << i << " deviated from expected state at time " << current_simulation_time_ << std::endl;
 
                 // also release current reservations as they are now invalid
-                std::vector<LowLevelStep> invalid_path = agents_[i].getLowLevelPlanFromIndex();
+                std::vector<LowLevelStep> invalid_path;
+                const std::vector<LowLevelStep>& full_path = agents_[i].getLowLevelPlan();
+                int ll_index = agents_[i].getLLStepIndex();
+                for (int t = ll_index; t < static_cast<int>(full_path.size()); t++) {
+                    invalid_path.emplace_back(full_path[t]);
+                }
                 reservation_table_.releasePath(invalid_path);
 
                 // create new placeholder plan to resynchronize
@@ -764,7 +732,7 @@ namespace DynamicData {
                 std::vector<LowLevelStep> placeholder_plan;
                 placeholder_plan.emplace_back(first_step);
                 
-                for (int t = 1; t < window_size_; t++) {
+                for (int t = 1; t < PLANNING_HORIZON; t++) {
                     LowLevelStep placeholder_step(current_simulation_time_ + t, shared_env_->curr_states[i].location, shared_env_->curr_states[i].orientation, Action::NA, true, -1);
                     placeholder_plan.emplace_back(placeholder_step);
                 }
@@ -776,10 +744,10 @@ namespace DynamicData {
                 // agent moved as expected, just extend reservation at the end to synchronize with reservation table
                 LowLevelStep last_step = agents_[i].getLowLevelPlan().back();
                 std::vector<LowLevelStep> extension_plan;
-                LowLevelStep placeholder_step(current_simulation_time_ + window_size_ - 1, last_step.location, last_step.orientation, Action::NA, true, -1);
+                LowLevelStep placeholder_step(current_simulation_time_ + PLANNING_HORIZON - 1, last_step.location, last_step.orientation, Action::NA, true, -1);
                 extension_plan.emplace_back(placeholder_step);
                 agents_[i].extendLowLevelPlan(extension_plan, true);
-                reservation_table_.extendPathReservation(last_step, extension_plan);
+                reservation_table_.extendPathReservation(placeholder_step);
             }
         }
 

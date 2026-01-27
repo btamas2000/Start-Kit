@@ -5,60 +5,123 @@
 
 
 void MyPlanner::initialize(int preprocess_time_limit, SharedEnvironment* env) {
-    // Initialize preprocessing
     DynamicData::DynamicEnvironment::getInstance().initialize(env);
 }
 
-void updateCongestionTrackerWithPlan(std::vector<HighLevelStep> plan) {
-    std::vector<PreprocessingPipeline::Portal>& portals = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortals();
+void updateCongestionTrackerWithPlan(std::vector<DynamicData::HighLevelStep> plan) {
+    const std::vector<PreprocessingPipeline::Portal>& portals = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getPortals();
     DynamicData::CongestionTracker& congestion_tracker = DynamicData::DynamicEnvironment::getInstance().getCongestionTracker();
+    const std::vector<int>& cluster_map = DynamicData::DynamicEnvironment::getInstance().getPreprocessing().getClusterMap();
+    int current_time = DynamicData::DynamicEnvironment::getInstance().getCurrentTime();
 
-    for (int i = 0; i < static_cast<int>(hl_plan.size()); i++) {
-        if (i > 0) {
-            if (hl_plan[i - 1].type == DynamicData::WaypointType::PORTAL && hl_plan[i].type == DynamicData::WaypointType::PORTAL) {
-                // check if opposite portals
-                
-                PreprocessingPipeline::Portal& from_portal = portals[hl_plan[i - 1].id];
-                PreprocessingPipeline::Portal& to_portal = portals[hl_plan[i].id];
-
-                if (from_portal.opposite_portal_id == to_portal.id) {
-                    congestion_tracker.addPortalUsage(
-                        from_portal.id,
-                        hl_plan[i].arrival_time
+    if (plan.size() == 0) {
+        return;
+    } else if (plan.size() == 1) {
+        if (plan[0].type == DynamicData::WaypointType::PORTAL) {
+            const PreprocessingPipeline::Portal& portal = portals[plan[0].id];
+            congestion_tracker.addClusterUsage(
+                portal.from,
+                current_time,
+                plan[0].arrival_time_est
+            );
+        } else if (plan[0].type == DynamicData::WaypointType::LOCATION) {
+            int cluster_id = cluster_map[plan[0].id];
+            congestion_tracker.addClusterUsage(
+                cluster_id,
+                current_time,
+                plan[0].arrival_time_est
+            );
+        }
+    } else {
+        for (int i = 0; i < static_cast<int>(plan.size()); i++) {
+            if (i == 0) {
+                // first step
+                if (plan[i].type == DynamicData::WaypointType::PORTAL) {
+                    const PreprocessingPipeline::Portal& portal = portals[plan[i].id];
+                    congestion_tracker.addClusterUsage(
+                        portal.from,
+                        current_time,
+                        plan[i].arrival_time_est
                     );
-                } else {
-                    int cluster_id = portals[hl_plan[i].id].from;
+                } else if (plan[i].type == DynamicData::WaypointType::LOCATION) {
+                    int cluster_id = cluster_map[plan[i].id];
                     congestion_tracker.addClusterUsage(
                         cluster_id,
-                        hl_plan[i - 1].arrival_time,
-                        hl_plan[i].arrival_time
+                        current_time,
+                        plan[i].arrival_time_est
                     );
                 }
-            } else if (hl_plan[i - 1].type == DynamicData::WaypointType::LOCATION && hl_plan[i].type == DynamicData::WaypointType::PORTAL) {
-                // location to portal
-                int cluster_id = portals[hl_plan[i].id].from;
-                congestion_tracker.addClusterUsage(
-                    cluster_id,
-                    hl_plan[i - 1].arrival_time,
-                    hl_plan[i].arrival_time
-                );
-            } else if (hl_plan[i - 1].type == DynamicData::WaypointType::PORTAL && hl_plan[i].type == DynamicData::WaypointType::LOCATION) {
-                // portal to location
-                int cluster_id = portals[hl_plan[i - 1].id].from;
-                congestion_tracker.addClusterUsage(
-                    cluster_id,
-                    hl_plan[i - 1].arrival_time,
-                    hl_plan[i].arrival_time
-                );
+            } else {
+                if (plan[i - 1].type == DynamicData::WaypointType::PORTAL && plan[i].type == DynamicData::WaypointType::PORTAL) {
+                    // check if opposite portals
+                    
+                    const PreprocessingPipeline::Portal& from_portal = portals[plan[i - 1].id];
+                    const PreprocessingPipeline::Portal& to_portal = portals[plan[i].id];
+
+                    if (from_portal.opposite_portal_id == to_portal.id) {
+                        congestion_tracker.addPortalUsage(
+                            from_portal.id,
+                            plan[i - 1].arrival_time_est
+                        );
+                    } else {
+                        int cluster_id = portals[plan[i].id].from;
+                        congestion_tracker.addClusterUsage(
+                            cluster_id,
+                            plan[i - 1].arrival_time_est,
+                            plan[i].arrival_time_est
+                        );
+                    }
+                } else if (plan[i - 1].type == DynamicData::WaypointType::LOCATION && plan[i].type == DynamicData::WaypointType::PORTAL) {
+                    // location to portal
+                    int cluster_id = portals[plan[i].id].from;
+                    congestion_tracker.addClusterUsage(
+                        cluster_id,
+                        plan[i - 1].arrival_time_est,
+                        plan[i].arrival_time_est
+                    );
+                } else if (plan[i - 1].type == DynamicData::WaypointType::PORTAL && plan[i].type == DynamicData::WaypointType::LOCATION) {
+                    // portal to location
+                    int cluster_id = portals[plan[i - 1].id].from;
+                    congestion_tracker.addClusterUsage(
+                        cluster_id,
+                        plan[i - 1].arrival_time_est,
+                        plan[i].arrival_time_est
+                    );
+                } else if (plan[i - 1].type == DynamicData::WaypointType::LOCATION && plan[i].type == DynamicData::WaypointType::LOCATION) {
+                    // location to location
+                    int cluster_id = cluster_map[plan[i - 1].id];
+                    congestion_tracker.addClusterUsage(
+                        cluster_id,
+                        plan[i - 1].arrival_time_est,
+                        plan[i].arrival_time_est
+                    );
+                }
             }
         }
     }
 }
 
+bool goalReachedInPlan(const std::vector<DynamicData::LowLevelStep>& plan, int task_id, SharedEnvironment* env) {
+    if (env->task_pool[task_id].locations.size() - 1 == env->task_pool[task_id].idx_next_loc) { // next is final goal
+        if (plan.empty()) {
+            return false; // no plan
+        }
+        int goal_loc = env->task_pool[task_id].locations.back();
+        for (const auto& step : plan) {
+            if (step.location == goal_loc) { // found plan to final goal
+                return true;
+            }
+        }
+    }
+    return false; // no plan to final goal found
+}
+
 void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvironment* env) {
 
     TimePoint start_time = std::chrono::steady_clock::now();
-    TimePoint end_time = start_time + std::chrono::milliseconds(time_limit);
+    auto duration_limit = std::chrono::milliseconds(time_limit);
+
+    auto cutoff_time = start_time + std::chrono::duration_cast<std::chrono::milliseconds>(duration_limit * 0.9);
 
     std::cout << "MyPlanner: Planning at timestep " << env->curr_timestep << "\n";
     
@@ -81,7 +144,8 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
     DynamicData::HighLevelPlanner hl_planner;
 
     for (const auto& agent : agents_copy) {
-        if (std::chrono::steady_clock::now() > end_time * 0.9) {
+        if (std::chrono::steady_clock::now() > cutoff_time) {
+            std::cout << "MyPlanner: Time limit reached during planning.\n";
             break; // Time limit reached
         }
 
@@ -107,11 +171,19 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
                 continue;
             }
 
+            std::cout << "MyPlanner: Low-level planning succeeded for agent " << agent_id << " with plan length " << ll_result.second.size() << "\n";
+
+            DynamicData::ReservationTable& reservation_table = DynamicData::DynamicEnvironment::getInstance().getReservationTable();
+
+            std::vector<DynamicData::LowLevelStep>& old_ll_plan = agents[agent_id].getLowLevelPlan();
+            // remove old path reservation
+            int ll_step_index = agents[agent_id].getLLStepIndex();
+            reservation_table.releasePath(std::vector<DynamicData::LowLevelStep>(old_ll_plan.begin() + ll_step_index, old_ll_plan.end()));
+
             agents[agent_id].setLowLevelPlan(ll_result.second);
             agents[agent_id].setLowLevelReplanNeeded(false);
 
             // reserve path in reservation table
-            DynamicData::ReservationTable& reservation_table = DynamicData::DynamicEnvironment::getInstance().getReservationTable();
             reservation_table.reservePath(ll_result.second);
         }
 
@@ -128,9 +200,10 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
         int ll_step_index = agents[agent_id].getLLStepIndex();
         int ll_planned_until = agents[agent_id].getLLPlannedUntil();
         int extend_threshold = (ll_planned_until / DynamicData::PLANNING_HORIZON) * DynamicData::PLANNING_HORIZON + DynamicData::PLANNING_HORIZON - 1;
-        if (ll_planned_until - ll_step_index < DynamicData::FILL_PLAN_AFTER) {
+        bool goal_reached = goalReachedInPlan(agents[agent_id].getLowLevelPlan(), agents[agent_id].getAssignedTaskID(), env);
+        if (!goal_reached && ll_planned_until - ll_step_index < DynamicData::FILL_PLAN_AFTER) {
             std::vector<DynamicData::LowLevelStep>& ll_plan = agents[agent_id].getLowLevelPlan();
-            LowLevelStep& last_step = ll_plan[ll_planned_until];
+            DynamicData::LowLevelStep& last_step = ll_plan[ll_planned_until];
 
             std::pair<bool, std::vector<DynamicData::LowLevelStep>> ll_extension_result = ll_planner.extendLowLevelPath(agent_id, last_step, extend_threshold);
 
@@ -140,7 +213,7 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
                 reservation_table.releasePath(std::vector<DynamicData::LowLevelStep>(ll_plan.begin() + ll_planned_until, ll_plan.end()));
 
                 // modify last planned element data
-                last_step = LowLevelStep(
+                last_step = DynamicData::LowLevelStep(
                     ll_extension_result.second[0].t,
                     ll_extension_result.second[0].location,
                     ll_extension_result.second[0].orientation,
@@ -159,7 +232,94 @@ void MyPlanner::plan(int time_limit, std::vector<Action> & actions,  SharedEnvir
         }
     }
 
-    
+    // check if moves are valid
+    // if not, set replanning flags and revert to wait
+
+    bool valid = false;
+
+    std::vector<int> prev_state(env->rows * env->cols, -2);
+    std::vector<int> next_state(env->rows * env->cols, -2);
+
+    for (int i = 0; i < env->rows * env->cols; i++) {
+        if (env->map[i] != 1) { // not obstacle
+            prev_state[i] = -1;
+            next_state[i] = -1;
+        }
+    }
+
+    for (int i = 0; i < env->num_of_agents; i++) {
+        int loc = env->curr_states[i].location;
+        prev_state[loc] = i;
+    }
+
+    std::unordered_set<int> reverted_agents;
+
+    for (int i = 0; i < env->num_of_agents; i++) {
+        int loc = env->curr_states[i].location;
+        Action action = actions[i];
+        int next_loc = loc;
+
+        if (action == Action::FW) {
+            // move forward
+            int orientation = env->curr_states[i].orientation;
+            if (orientation == 0) {
+                // east
+                next_loc = loc + 1;
+            } else if (orientation == 1) {
+                // south
+                next_loc = loc + env->cols;
+            } else if (orientation == 2) {
+                // west
+                next_loc = loc - 1;
+            } else {
+                // north
+                next_loc = loc - env->cols;
+            }
+        } else {
+            // other actions do not change location
+            next_loc = loc;
+        }
+
+        if (next_state[next_loc] == -1) {
+            // free to move
+            next_state[next_loc] = i;
+        } else {
+            // conflict detected
+            // higher priority agent keeps move, lower priority agents revert to wait
+            int prio1 = agents[i].getPriority();
+            int prio2 = agents[next_state[next_loc]].getPriority();
+            if (prio1 < prio2) {
+                // agent i has higher priority, revert other agent
+                reverted_agents.insert(next_state[next_loc]);
+                next_state[next_loc] = i;
+            } else {
+                // agent i has lower priority, revert self
+                reverted_agents.insert(i);
+            }
+        }
+    }
+
+    valid = (reverted_agents.size() == 0);
+
+    while(!valid) {
+        std::unordered_set<int> new_reverted_agents;
+        for (int agent_id : reverted_agents) {
+            actions[agent_id] = Action::W;
+            agents[agent_id].setLowLevelReplanNeeded(true);
+            agents[agent_id].setHighLevelReplanNeeded(true);
+            // check if revertion causes conflicts for other agents
+            if (next_state[env->curr_states[agent_id].location] != -1) {
+                int other_agent_id = next_state[env->curr_states[agent_id].location];
+                new_reverted_agents.insert(other_agent_id);
+            }
+            next_state[env->curr_states[agent_id].location] = agent_id;
+        }
+        reverted_agents = new_reverted_agents;
+        valid = (reverted_agents.size() == 0);
+    }
+
+    std::cout << "MyPlanner: Debugging Reservation Table at timestep " << env->curr_timestep << ":\n";
+    DynamicData::DynamicEnvironment::getInstance().getReservationTable().printTablesAtTimestep(env->curr_timestep);
 
     return;
 }

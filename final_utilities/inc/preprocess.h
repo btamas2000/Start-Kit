@@ -12,7 +12,7 @@
 namespace PreprocessingPipeline {
     const int MINIMUM_DT1_CLUSTER_SIZE = 4;
 
-    const bool DEBUG_PREPROCESSING = true;
+    const bool DEBUG_PREPROCESSING = false;
     const std::string PREPROCESSING_DEBUG_PATH = "preprocessing_debug";
 
     struct Portal {
